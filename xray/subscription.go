@@ -43,7 +43,7 @@ func (s *Subscription) FetchAll() ([]string, error) {
 		return links, nil
 	}
 	// Configs are separated by newline char
-	links := strings.Split(string(decoded), "\n")
+	links := strings.Split(strings.TrimSpace(string(decoded)), "\n")
 	s.ConfigLinks = links
 	return links, nil
 }

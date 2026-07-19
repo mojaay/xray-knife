@@ -72,6 +72,7 @@ func (t *Trojan) Parse() error {
 	t.PublicKey = query.Get("pbk")
 	t.ShortIds = query.Get("sid")
 	t.SpiderX = query.Get("spx")
+	t.Mldsa65Verify = query.Get("pqv")
 	t.AllowInsecure = query.Get("allowInsecure")
 	t.QuicSecurity = query.Get("quicSecurity")
 	t.Key = query.Get("key")
@@ -205,6 +206,7 @@ func (t *Trojan) GetLink() string {
 		addQueryParam("pbk", t.PublicKey)
 		addQueryParam("sid", t.ShortIds)
 		addQueryParam("spx", t.SpiderX)
+		addQueryParam("pqv", t.Mldsa65Verify)
 		addQueryParam("allowInsecure", t.AllowInsecure)
 		addQueryParam("quicSecurity", t.QuicSecurity)
 		addQueryParam("key", t.Key)
@@ -277,12 +279,8 @@ func (t *Trojan) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDe
 			`, string(pathb), string(hostb))))
 		}
 	case "kcp":
+		// mKCP header/seed removed from xray-core; use bare defaults.
 		s.KCPSettings = &conf.KCPConfig{}
-		headerType := t.HeaderType
-		if headerType == "" {
-			headerType = "none"
-		}
-		s.KCPSettings.HeaderConfig = json.RawMessage([]byte(fmt.Sprintf(`{ "type": "%s" }`, headerType)))
 	case "ws":
 		s.WSSettings = &conf.WebSocketConfig{}
 		s.WSSettings.Path = t.Path
@@ -359,8 +357,7 @@ func (t *Trojan) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDe
 			t.TlsFingerprint = "chrome"
 		}
 		s.TLSSettings = &conf.TLSConfig{
-			Fingerprint:   t.TlsFingerprint,
-			AllowInsecure: insecure,
+			Fingerprint: t.TlsFingerprint,
 		}
 
 		if t.SNI != "" {
@@ -368,17 +365,28 @@ func (t *Trojan) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDe
 		} else {
 			s.TLSSettings.ServerName = t.Host
 		}
+		// xray-core removed "allowInsecure"; emulate with verifyPeerCertByName
+		// (accepts self-signed certs valid for this name). See vless.go.
+		if insecure && s.TLSSettings.ServerName != "" {
+			s.TLSSettings.VerifyPeerCertByName = s.TLSSettings.ServerName
+		}
 		if t.ALPN != "" {
-			s.TLSSettings.ALPN = &conf.StringList{t.ALPN}
+			alpns := conf.StringList(strings.Split(t.ALPN, ","))
+			s.TLSSettings.ALPN = &alpns
 		}
 	} else if t.Security == "reality" {
+		fp := t.TlsFingerprint
+		if fp == "" {
+			fp = "chrome"
+		}
 		s.REALITYSettings = &conf.REALITYConfig{
-			Show:        false,
-			Fingerprint: t.TlsFingerprint,
-			ServerName:  t.SNI,
-			PublicKey:   t.PublicKey,
-			ShortId:     t.ShortIds,
-			SpiderX:     t.SpiderX,
+			Show:          false,
+			Fingerprint:   fp,
+			ServerName:    t.SNI,
+			PublicKey:     t.PublicKey,
+			ShortId:       t.ShortIds,
+			SpiderX:       t.SpiderX,
+			Mldsa65Verify: t.Mldsa65Verify,
 		}
 	}
 
@@ -471,12 +479,8 @@ func (t *Trojan) BuildInboundDetourConfig() (*conf.InboundDetourConfig, error) {
 			`, string(pathb), string(hostb))))
 		}
 	case "kcp":
+		// mKCP header/seed removed from xray-core; use bare defaults.
 		streamConfig.KCPSettings = &conf.KCPConfig{}
-		headerType := t.HeaderType
-		if headerType == "" {
-			headerType = "none"
-		}
-		streamConfig.KCPSettings.HeaderConfig = json.RawMessage([]byte(fmt.Sprintf(`{ "type": "%s" }`, headerType)))
 	case "ws":
 		streamConfig.WSSettings = &conf.WebSocketConfig{}
 		streamConfig.WSSettings.Path = t.Path

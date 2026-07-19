@@ -40,6 +40,10 @@ const (
 	// minRotationInterval is a floor on --rotate; anything tighter spins the
 	// loop without giving tests room to finish.
 	minRotationInterval uint32 = 5
+	// defaultMaxDelayMs is the health-probe timeout (ms) used when
+	// MaximumAllowedDelay is unset (0). It matches the fallback the per-site
+	// timeout guards already apply (5s).
+	defaultMaxDelayMs uint16 = 5000
 	// defaultChainAttempts is how many random chains we'll try before giving
 	// up on a rotation cycle.
 	defaultChainAttempts int = 5
@@ -176,9 +180,19 @@ func New(config Config, logger *log.Logger) (*Service, error) {
 	}
 
 	// --rotate 0 used to drop us into a tight loop; clamp very small values
-	// to a sane floor instead.
-	if config.RotationInterval > 0 && config.RotationInterval < minRotationInterval {
+	// (including 0, which the web API accepts unvalidated) to a sane floor.
+	if config.RotationInterval < minRotationInterval {
 		config.RotationInterval = minRotationInterval
+	}
+
+	// MaximumAllowedDelay feeds context deadlines directly in the chain
+	// rotation paths (runChainExitRotation/runChainFullRotation/
+	// findWorkingChain), so a zero — which the web API sends when the field
+	// is omitted — would make context.WithTimeout expire every probe
+	// instantly and fail the initial chain search. Clamp it to a usable
+	// default here so every consumer sees a valid timeout.
+	if config.MaximumAllowedDelay == 0 {
+		config.MaximumAllowedDelay = defaultMaxDelayMs
 	}
 
 	// App mode validation and overrides — run BEFORE any privileged side
@@ -293,6 +307,22 @@ func New(config Config, logger *log.Logger) (*Service, error) {
 		return nil, fmt.Errorf("failed to create inbound: %w", err)
 	}
 	s.inbound = inbound
+
+	// When a custom inbound link is supplied via -I / --inbound-config, the
+	// listener binds to the address/port encoded in that link, not the
+	// --addr/--port flags. Reconcile s.config with the real listen target so
+	// every consumer that dials our own listener (health check, host-tun,
+	// namespace tunnel, system-proxy) points at the right port instead of the
+	// flag defaults.
+	if s.config.InboundConfigLink != "" {
+		g := inbound.ConvertToGeneralConfig()
+		if g.Address != "" {
+			s.config.ListenAddr = g.Address
+		}
+		if g.Port != "" {
+			s.config.ListenPort = g.Port
+		}
+	}
 
 	if err := s.core.SetInbound(inbound); err != nil {
 		return nil, fmt.Errorf("failed to set inbound: %w", err)
@@ -1106,6 +1136,10 @@ func (s *Service) runRotationMode(ctx context.Context, forceRotate <-chan struct
 		s.logf(customlog.Success, "Switched to: %s", result.ConfigLink)
 		currentInstance = instance
 		lastUsedLink = result.ConfigLink
+		// The fresh outbound starts clean: reset the health-fail counter so
+		// it doesn't inherit failures accumulated against the previous
+		// outbound (e.g. after a timer/manual rotation that fired at 2/3).
+		healthFails = 0
 		s.setRotationStatus("idle")
 	}
 }

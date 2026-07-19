@@ -39,6 +39,14 @@ type Config struct {
 	InsecureTLS     bool
 	Verbose         bool
 
+	// Multi-endpoint "reachability panel": test each config against several
+	// diverse destinations and grade it by how many succeed, instead of
+	// trusting a single URL. CheckPreset selects a built-in panel; TestURLs is
+	// a custom comma-separated list (overrides the preset and --url).
+	CheckPreset      string
+	TestURLs         string
+	SuccessThreshold float64
+
 	// DB flags
 	FromDB         bool
 	Limit          int
@@ -60,6 +68,19 @@ type Config struct {
 	Ping                bool
 	PingInterval        uint16
 	BindInterface       string
+
+	// SemanticDedup collapses links that describe the same connection (not just
+	// exact-string duplicates) before testing.
+	SemanticDedup bool
+
+	// Prescan flags: a fast TCP reachability pass that drops dead endpoints
+	// before the expensive full test.
+	Prescan        bool
+	PrescanTimeout uint16
+	PrescanWorkers uint16
+
+	// MaxPassed stops the batch test once N configs have passed (0 = test all).
+	MaxPassed uint16
 }
 
 func validateConfig(cfg *Config) error {
@@ -79,6 +100,15 @@ func validateConfig(cfg *Config) error {
 		}
 	}
 
+	if cfg.SuccessThreshold <= 0 || cfg.SuccessThreshold > 1 {
+		return fmt.Errorf("--url-success-threshold must be within (0, 1], got %g", cfg.SuccessThreshold)
+	}
+	if cfg.CheckPreset != "" {
+		if _, ok := pkghttp.CheckPresets[cfg.CheckPreset]; !ok {
+			return fmt.Errorf("unknown --check-preset %q; available: %s", cfg.CheckPreset, strings.Join(pkghttp.PresetNames(), ", "))
+		}
+	}
+
 	if cfg.Ping {
 		if cfg.ConfigLinksFile != "" || cfg.FromDB {
 			return fmt.Errorf("--ping flag cannot be used with --file or --from-db flags")
@@ -92,6 +122,30 @@ func validateConfig(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+// buildEndpointPanel resolves the multi-endpoint test panel from the flags, or
+// returns nil to keep the legacy single-URL behavior. A custom --test-urls list
+// takes precedence over a named --check-preset.
+func buildEndpointPanel(config *Config) ([]pkghttp.EndpointCheck, error) {
+	if strings.TrimSpace(config.TestURLs) != "" {
+		var panel []pkghttp.EndpointCheck
+		for _, raw := range strings.Split(config.TestURLs, ",") {
+			u := strings.TrimSpace(raw)
+			if u == "" {
+				continue
+			}
+			panel = append(panel, pkghttp.EndpointCheck{URL: u, Method: config.HTTPMethod})
+		}
+		if len(panel) == 0 {
+			return nil, fmt.Errorf("--test-urls was set but contained no valid URLs")
+		}
+		return panel, nil
+	}
+	if config.CheckPreset != "" {
+		return pkghttp.CheckPresets[config.CheckPreset], nil
+	}
+	return nil, nil
 }
 
 func newHttpCommand() *cobra.Command {
@@ -108,6 +162,11 @@ Use --from-db to test configs from the database library.`,
 				return err
 			}
 
+			panel, err := buildEndpointPanel(config)
+			if err != nil {
+				return err
+			}
+
 			examiner, err := pkghttp.NewExaminer(pkghttp.Options{
 				Core:                   config.CoreType,
 				MaxDelay:               config.MaximumAllowedDelay,
@@ -120,6 +179,8 @@ Use --from-db to test configs from the database library.`,
 				DoIPInfo:               config.GetIPInfo,
 				TestEndpoint:           config.DestURL,
 				TestEndpointHttpMethod: config.HTTPMethod,
+				TestEndpoints:          panel,
+				SuccessThreshold:       config.SuccessThreshold,
 				SpeedtestKbAmount:      config.SpeedtestAmount,
 				BindInterface:          config.BindInterface,
 			})
@@ -255,13 +316,77 @@ func handleMultipleConfigs(examiner *pkghttp.Examiner, config *Config, links []s
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Deduplicate links before testing
-	links, dupsRemoved := pkghttp.DeduplicateLinks(links)
-	if dupsRemoved > 0 {
-		customlog.Printf(customlog.Info, "Removed %d duplicate config link(s). Testing %d unique configs.\n", dupsRemoved, len(links))
+	// Deduplicate links before testing. Semantic dedup subsumes exact-string
+	// dedup (identical strings map to the same connection identity), so use one
+	// or the other.
+	var dupsRemoved int
+	if config.SemanticDedup {
+		links, dupsRemoved = pkghttp.SemanticDeduplicateLinks(examiner.Core, links)
+		if dupsRemoved > 0 {
+			customlog.Printf(customlog.Info, "Semantic dedup removed %d duplicate config link(s) (same connection). Testing %d unique configs.\n", dupsRemoved, len(links))
+		}
+	} else {
+		links, dupsRemoved = pkghttp.DeduplicateLinks(links)
+		if dupsRemoved > 0 {
+			customlog.Printf(customlog.Info, "Removed %d duplicate config link(s). Testing %d unique configs.\n", dupsRemoved, len(links))
+		}
 	}
 
-	printConfiguration(config, len(links))
+	// Optional TCP pre-check: cheaply drop unreachable endpoints before the
+	// full test, which spins up a whole core instance per config.
+	if config.Prescan {
+		var preBar *progressbar.ProgressBar
+		pre, err := pkghttp.RunPrescan(ctx, examiner.Core, links,
+			pkghttp.PrescanOptions{
+				Workers:       int(config.PrescanWorkers),
+				Timeout:       time.Duration(config.PrescanTimeout) * time.Millisecond,
+				BindInterface: config.BindInterface,
+			},
+			func(uniqueEndpoints int) {
+				customlog.Printf(customlog.Processing, "Pre-scanning %d unique endpoint(s) via TCP (timeout %dms)...\n", uniqueEndpoints, config.PrescanTimeout)
+				preBar = progressbar.NewOptions(uniqueEndpoints,
+					progressbar.OptionSetWriter(os.Stderr),
+					progressbar.OptionEnableColorCodes(true),
+					progressbar.OptionShowCount(),
+					progressbar.OptionSetDescription("[cyan]Pre-scanning endpoints[reset]"),
+					progressbar.OptionClearOnFinish(),
+				)
+			},
+			func() {
+				if preBar != nil {
+					_ = preBar.Add(1)
+				}
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("prescan failed: %w", err)
+		}
+		if preBar != nil {
+			_ = preBar.Finish()
+			fmt.Fprintln(os.Stderr)
+		}
+		customlog.Printf(customlog.Success,
+			"Pre-scan complete: %d reachable, %d filtered out, %d kept without probing (UDP/unparseable).\n",
+			pre.TCPReachable, pre.FilteredOut, pre.Bypassed)
+
+		// Abort cleanly if the user interrupted during the pre-scan.
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		links = pre.Reachable
+		if len(links) == 0 {
+			customlog.Printf(customlog.Warning, "No reachable configs after pre-scan; nothing to test.\n")
+			return nil
+		}
+	}
+
+	panel, err := buildEndpointPanel(config)
+	if err != nil {
+		return err
+	}
+
+	printConfiguration(config, len(links), panel)
 
 	// Create a test run entry in the database
 	opts := pkghttp.Options{
@@ -276,6 +401,8 @@ func handleMultipleConfigs(examiner *pkghttp.Examiner, config *Config, links []s
 		DoIPInfo:               config.GetIPInfo,
 		TestEndpoint:           config.DestURL,
 		TestEndpointHttpMethod: config.HTTPMethod,
+		TestEndpoints:          panel,
+		SuccessThreshold:       config.SuccessThreshold,
 		SpeedtestKbAmount:      config.SpeedtestAmount,
 		BindInterface:          config.BindInterface,
 	}
@@ -307,6 +434,10 @@ func handleMultipleConfigs(examiner *pkghttp.Examiner, config *Config, links []s
 	if config.OutputFile != "" {
 		os.Remove(config.OutputFile)
 	}
+
+	// Derive a cancelable context so --max-passed can stop the pool early.
+	testCtx, cancelTests := context.WithCancel(ctx)
+	defer cancelTests()
 
 	// Run the tests with progress bar
 	testManager := pkghttp.NewTestManager(examiner, config.ThreadCount, config.Verbose, nil)
@@ -356,7 +487,12 @@ func handleMultipleConfigs(examiner *pkghttp.Examiner, config *Config, links []s
 		}
 		for res := range resultsChan {
 			if res.Status == "passed" {
-				atomic.AddInt32(&passedCount, 1)
+				newCount := atomic.AddInt32(&passedCount, 1)
+				// Early exit: once enough configs pass, cancel the pool so the
+				// remaining (mostly dead, full-timeout) tasks drain immediately.
+				if config.MaxPassed > 0 && newCount >= int32(config.MaxPassed) {
+					cancelTests()
+				}
 			}
 			results = append(results, res)
 			batch = append(batch, res)
@@ -367,7 +503,7 @@ func handleMultipleConfigs(examiner *pkghttp.Examiner, config *Config, links []s
 		flushBatch()
 	}()
 
-	testManager.RunTests(ctx, links, resultsChan, func() {
+	testManager.RunTests(testCtx, links, resultsChan, func() {
 		bar.Describe(fmt.Sprintf("[cyan]Testing configs (%d passed)[reset]", atomic.LoadInt32(&passedCount)))
 		bar.Add(1)
 	})
@@ -375,6 +511,10 @@ func handleMultipleConfigs(examiner *pkghttp.Examiner, config *Config, links []s
 	collectorWg.Wait()
 	bar.Finish()
 	fmt.Fprintln(os.Stderr)
+
+	if config.MaxPassed > 0 && atomic.LoadInt32(&passedCount) >= int32(config.MaxPassed) {
+		customlog.Printf(customlog.Info, "Reached --max-passed=%d; stopped early without testing every config.\n", config.MaxPassed)
+	}
 
 	// If sorted output was requested, rewrite the file sorted
 	if config.SortedByRealDelay && config.OutputFile != "" {
@@ -385,9 +525,35 @@ func handleMultipleConfigs(examiner *pkghttp.Examiner, config *Config, links []s
 	return processor.SaveResults(results)
 }
 
+// printEndpointBreakdown shows the per-endpoint outcome of a multi-endpoint
+// test so the user can see exactly which destination failed and why.
+func printEndpointBreakdown(res *pkghttp.Result) {
+	if len(res.EndpointResults) == 0 {
+		return
+	}
+	fmt.Printf("\n%s (%d/%d passed):\n", color.RedString("Endpoint checks"), res.SuccessCount, res.TotalCount)
+	for _, er := range res.EndpointResults {
+		if er.Outcome == "ok" {
+			fmt.Printf("  %s %-26s %dms\n", color.GreenString("✓"), er.Label, er.Delay)
+		} else {
+			reason := er.Reason
+			if reason == "" {
+				reason = er.Outcome
+			}
+			fmt.Printf("  %s %-26s %s\n", color.RedString("✗"), er.Label, reason)
+		}
+	}
+	fmt.Println()
+}
+
 func handleSingleConfig(examiner *pkghttp.Examiner, config *Config) {
 	examiner.Verbose = true
 	res, err := examiner.ExamineConfig(context.Background(), config.ConfigLink)
+
+	// Print the per-endpoint breakdown first: it is populated even on failure
+	// and explains exactly which endpoint(s) failed.
+	printEndpointBreakdown(&res)
+
 	if err != nil {
 		customlog.Printf(customlog.Failure, "%v\n", err)
 		return
@@ -409,16 +575,25 @@ func handleSingleConfig(examiner *pkghttp.Examiner, config *Config) {
 }
 
 // printConfiguration prints the current configuration
-func printConfiguration(config *Config, totalConfigs int) {
-	fmt.Printf("%s: %d\n%s: %d\n%s: %dms\n%s: %t\n%s: %s\n%s: %t\n%s: %t\n",
+func printConfiguration(config *Config, totalConfigs int, panel []pkghttp.EndpointCheck) {
+	fmt.Printf("%s: %d\n%s: %d\n%s: %dms\n%s: %t\n%s: %t\n%s: %t\n",
 		color.RedString("Total configs"), totalConfigs,
 		color.RedString("Thread count"), config.ThreadCount,
 		color.RedString("Maximum delay"), config.MaximumAllowedDelay,
 		color.RedString("Speed test"), config.Speedtest,
-		color.RedString("Test url"), config.DestURL,
 		color.RedString("IP info"), config.GetIPInfo,
 		color.RedString("Insecure TLS"), config.InsecureTLS,
 	)
+	if len(panel) > 0 {
+		urls := make([]string, len(panel))
+		for i, c := range panel {
+			urls[i] = c.URL
+		}
+		fmt.Printf("%s: %s\n", color.RedString("Test panel"), strings.Join(urls, ", "))
+		fmt.Printf("%s: %.0f%% of %d endpoint(s)\n", color.RedString("Pass threshold"), config.SuccessThreshold*100, len(panel))
+	} else {
+		fmt.Printf("%s: %s\n", color.RedString("Test url"), config.DestURL)
+	}
 	if config.OutputFile != "" {
 		fmt.Printf("%s: %s\n", color.RedString("Output file"), config.OutputFile)
 	}
@@ -435,8 +610,14 @@ func addFlags(cmd *cobra.Command, config *Config) {
 	// Core flags
 	flags.Uint16VarP(&config.ThreadCount, "thread", "t", 50, "Number of threads")
 	flags.StringVarP(&config.CoreType, "core", "z", "auto", "Core type (auto, singbox, xray)")
-	flags.StringVarP(&config.DestURL, "url", "u", "https://cloudflare.com/cdn-cgi/trace", "The url to test config")
+	flags.StringVarP(&config.DestURL, "url", "u", "https://cloudflare.com/cdn-cgi/trace", "The url to test config (single-endpoint mode)")
 	flags.StringVarP(&config.HTTPMethod, "method", "m", "GET", "Http method")
+
+	// Multi-endpoint reachability panel (grades configs by how many diverse
+	// destinations they can actually reach, not just one CDN).
+	flags.StringVar(&config.CheckPreset, "check-preset", "", fmt.Sprintf("Test each config against a diverse endpoint panel instead of one URL. Presets: %s", strings.Join(pkghttp.PresetNames(), ", ")))
+	flags.StringVar(&config.TestURLs, "test-urls", "", "Comma-separated URLs to test each config against (overrides --check-preset and --url). generate_204 URLs require a 204 response.")
+	flags.Float64Var(&config.SuccessThreshold, "url-success-threshold", 1.0, "Fraction of panel endpoints that must succeed for a 'passed' grade (e.g. 0.75). Above 0 but below it grades 'semi-passed'.")
 	flags.BoolVarP(&config.ShowBody, "body", "b", false, "Show response body")
 	flags.Uint16VarP(&config.MaximumAllowedDelay, "mdelay", "d", 5000, "Maximum allowed delay (ms)")
 	flags.BoolVarP(&config.InsecureTLS, "insecure", "e", false, "Insecure tls connection (fake SNI)")
@@ -454,6 +635,13 @@ func addFlags(cmd *cobra.Command, config *Config) {
 	flags.Uint16Var(&config.PingInterval, "interval", 1000, "Interval between pings in milliseconds (ms)")
 
 	flags.StringVar(&config.BindInterface, "bind", "", "Bind outbound dials to a specific OS interface (e.g. eth0). Linux: needs CAP_NET_RAW.")
+
+	// Dedup / prescan / early-exit flags (batch mode only)
+	flags.BoolVar(&config.SemanticDedup, "dedup-semantic", false, "Deduplicate by connection identity (protocol/address/port/credential/transport/TLS) instead of exact link text; drops re-skinned duplicates")
+	flags.BoolVar(&config.Prescan, "prescan", false, "TCP pre-check: drop unreachable endpoints before the full test (much faster on large lists)")
+	flags.Uint16Var(&config.PrescanTimeout, "prescan-timeout", 2000, "TCP dial timeout for --prescan (ms)")
+	flags.Uint16Var(&config.PrescanWorkers, "prescan-workers", 512, "Concurrent TCP dials for --prescan")
+	flags.Uint16Var(&config.MaxPassed, "max-passed", 0, "Stop the batch test after N configs pass (0 = test all). Ideal for large lists.")
 
 	// DB flags
 	flags.BoolVar(&config.FromDB, "from-db", false, "Test configs from the database")

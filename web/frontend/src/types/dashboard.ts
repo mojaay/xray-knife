@@ -10,6 +10,19 @@ export interface HttpResult {
     download: number;
     upload: number;
     location: string;
+    successCount?: number;
+    totalCount?: number;
+    endpoints?: EndpointResult[];
+    endpointSummary?: string;
+}
+
+export interface EndpointResult {
+    url: string;
+    label: string;
+    outcome: 'ok' | 'slow' | 'bad-status' | 'error';
+    code: number;
+    delay: number;
+    reason?: string;
 }
 
 export interface ScanResult {

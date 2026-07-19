@@ -99,6 +99,7 @@ func (v *Vless) Parse() error {
 	v.PublicKey = query.Get("pbk")               // reality public key
 	v.ShortIds = query.Get("sid")                // reality short ID
 	v.SpiderX = query.Get("spx")                 // reality spiderX
+	v.Mldsa65Verify = query.Get("pqv")           // reality post-quantum ML-DSA-65 verify key
 	v.HeaderType = query.Get("headerType")       // e.g., "http" for TCP HTTP obfuscation
 	v.ServiceName = query.Get("serviceName")     // grpc service name
 	v.Mode = query.Get("mode")                   // grpc mode (gun, multi) or xhttp mode
@@ -242,6 +243,7 @@ func (v *Vless) GetLink() string {
 		addQueryParam("pbk", v.PublicKey)
 		addQueryParam("sid", v.ShortIds)
 		addQueryParam("spx", v.SpiderX)
+		addQueryParam("pqv", v.Mldsa65Verify)
 		addQueryParam("headerType", v.HeaderType)
 		addQueryParam("serviceName", v.ServiceName)
 		addQueryParam("mode", v.Mode)
@@ -338,12 +340,10 @@ func (v *Vless) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDet
 			`, string(pathb), string(hostb)))
 		}
 	case "kcp":
+		// mKCP "header" & "seed" were removed from xray-core (they now hard-error
+		// in Build()); the obfuscation header moved to finalmask. Use a bare
+		// mKCP config so it builds with defaults.
 		s.KCPSettings = &conf.KCPConfig{}
-		headerType := v.HeaderType
-		if headerType == "" {
-			headerType = "none"
-		}
-		s.KCPSettings.HeaderConfig = json.RawMessage([]byte(fmt.Sprintf(`{ "type": "%s" }`, headerType)))
 	case "ws":
 		s.WSSettings = &conf.WebSocketConfig{}
 		s.WSSettings.Path = v.Path
@@ -358,13 +358,11 @@ func (v *Vless) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDet
 			Path: v.Path,
 			Mode: v.Mode,
 		}
-		// decode the percent-encoded JSON from the URL
+		// v.Extra was already percent-decoded by url.Query().Get("extra") in
+		// Parse(); it holds raw JSON. Do NOT unescape again — a second
+		// url.QueryUnescape corrupts payloads containing '+' or '%'.
 		if v.Extra != "" {
-			decoded, err := url.QueryUnescape(v.Extra)
-			if err != nil {
-				return nil, fmt.Errorf("invalid extra parameter: %w", err)
-			}
-			s.XHTTPSettings.Extra = json.RawMessage(decoded)
+			s.XHTTPSettings.Extra = json.RawMessage(v.Extra)
 		}
 
 		if v.Mode == "" {
@@ -413,13 +411,19 @@ func (v *Vless) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDet
 			fp = "chrome"
 		}
 		s.TLSSettings = &conf.TLSConfig{
-			Fingerprint:   fp,
-			AllowInsecure: insecureFlag,
+			Fingerprint: fp,
 		}
 		if v.SNI != "" {
 			s.TLSSettings.ServerName = v.SNI
 		} else {
 			s.TLSSettings.ServerName = v.Host // Fallback to Host if SNI is empty
+		}
+		// xray-core removed "allowInsecure" (it hard-errors in Build() after
+		// 2026-06-01). "verifyPeerCertByName" is the sanctioned replacement:
+		// it skips CA/chain validation (so self-signed certs pass) while still
+		// requiring the cert to be valid for the given name.
+		if insecureFlag && s.TLSSettings.ServerName != "" {
+			s.TLSSettings.VerifyPeerCertByName = s.TLSSettings.ServerName
 		}
 		if v.ALPN != "" {
 			alpns := conf.StringList(strings.Split(v.ALPN, ","))
@@ -431,12 +435,13 @@ func (v *Vless) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDet
 			fp = "chrome"
 		}
 		s.REALITYSettings = &conf.REALITYConfig{
-			Show:        false,
-			Fingerprint: fp,
-			ServerName:  v.SNI,
-			PublicKey:   v.PublicKey,
-			ShortId:     v.ShortIds,
-			SpiderX:     v.SpiderX,
+			Show:          false,
+			Fingerprint:   fp,
+			ServerName:    v.SNI,
+			PublicKey:     v.PublicKey,
+			ShortId:       v.ShortIds,
+			SpiderX:       v.SpiderX,
+			Mldsa65Verify: v.Mldsa65Verify,
 		}
 	}
 
@@ -506,12 +511,8 @@ func (v *Vless) BuildInboundDetourConfig() (*conf.InboundDetourConfig, error) {
 			`, string(pathb), string(hostb)))
 		}
 	case "kcp":
+		// mKCP header/seed removed from xray-core; use bare defaults.
 		streamConfig.KCPSettings = &conf.KCPConfig{}
-		headerType := v.HeaderType
-		if headerType == "" {
-			headerType = "none"
-		}
-		streamConfig.KCPSettings.HeaderConfig = json.RawMessage([]byte(fmt.Sprintf(`{ "type": "%s" }`, headerType)))
 	case "ws":
 		streamConfig.WSSettings = &conf.WebSocketConfig{}
 		streamConfig.WSSettings.Path = v.Path

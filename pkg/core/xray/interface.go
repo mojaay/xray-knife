@@ -55,6 +55,7 @@ type Vless struct {
 	PublicKey      string `json:"pbk"`
 	ShortIds       string `json:"sid"`        // Mandatory, the shortId list available to the client, which can be used to distinguish different clients
 	SpiderX        string `json:"spx"`        // Reality path
+	Mldsa65Verify  string `json:"pqv"`        // REALITY post-quantum ML-DSA-65 verification key
 	HeaderType     string `json:"headerType"` // TCP HTTP Obfuscation
 	Host           string `json:"host"`       // HTTP, WS
 	Path           string `json:"path"`
@@ -106,9 +107,10 @@ type Trojan struct {
 	Mode           string `json:"mode"`        // XHTTP, GRPC
 
 	// Yes, Trojan can have reality too xD
-	PublicKey string `json:"pbk"`
-	ShortIds  string `json:"sid"` // Mandatory, the shortId list available to the client, which can be used to distinguish different clients
-	SpiderX   string `json:"spx"` // Reality path
+	PublicKey     string `json:"pbk"`
+	ShortIds      string `json:"sid"` // Mandatory, the shortId list available to the client, which can be used to distinguish different clients
+	SpiderX       string `json:"spx"` // Reality path
+	Mldsa65Verify string `json:"pqv"` // REALITY post-quantum ML-DSA-65 verification key
 
 	OrigLink string `json:"-"` // Original link
 }
@@ -121,6 +123,9 @@ type Wireguard struct {
 	Endpoint     string
 	LocalAddress string `json:"address"` // Local address IPv4/IPv6 seperated by commas
 	Mtu          int32  `json:"mtu"`
+	KeepAlive    int32  `json:"keepalive"`  // Persistent keepalive (seconds)
+	AllowedIPs   string `json:"allowedips"` // Comma-separated allowed IP CIDRs
+	Reserved     string `json:"reserved"`   // Reserved bytes: "a,b,c" or base64 (e.g. WARP)
 
 	OrigLink string `json:"-"` // Original link
 }

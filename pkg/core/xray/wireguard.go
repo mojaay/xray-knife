@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -13,6 +14,35 @@ import (
 	"github.com/fatih/color"
 	"github.com/xtls/xray-core/infra/conf"
 )
+
+// parseReserved converts a WireGuard "reserved" link value into bytes.
+// Accepts a comma-separated list of ints (e.g. "1,2,3", as used by WARP) or
+// a base64 string. Returns nil when it can't parse.
+func parseReserved(s string) []byte {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if strings.Contains(s, ",") {
+		parts := strings.Split(s, ",")
+		b := make([]byte, 0, len(parts))
+		for _, p := range parts {
+			n, err := strconv.Atoi(strings.TrimSpace(p))
+			if err != nil || n < 0 || n > 255 {
+				return nil
+			}
+			b = append(b, byte(n))
+		}
+		return b
+	}
+	if dec, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return dec
+	}
+	if dec, err := base64.RawURLEncoding.DecodeString(s); err == nil {
+		return dec
+	}
+	return nil
+}
 
 func NewWireguard(link string) Protocol {
 	return &Wireguard{OrigLink: link}
@@ -118,6 +148,9 @@ func (w *Wireguard) GetLink() string {
 		addQueryParam("presharedkey", w.PreSharedKey)
 		addQueryParam("address", w.LocalAddress)
 		addQueryParamInt("mtu", w.Mtu)
+		addQueryParamInt("keepalive", w.KeepAlive)
+		addQueryParam("allowedips", w.AllowedIPs)
+		addQueryParam("reserved", w.Reserved)
 
 		baseURL.RawQuery = params.Encode()
 
@@ -138,9 +171,11 @@ func (w *Wireguard) ConvertToGeneralConfig() (g protocol.GeneralConfig) {
 }
 
 type Peer struct {
-	Endpoint     string `json:"endpoint"`
-	PublicKey    string `json:"publicKey"`
-	PreSharedKey string `json:"preSharedKey"`
+	Endpoint     string   `json:"endpoint"`
+	PublicKey    string   `json:"publicKey"`
+	PreSharedKey string   `json:"preSharedKey"`
+	KeepAlive    uint32   `json:"keepAlive,omitempty"`
+	AllowedIPs   []string `json:"allowedIPs,omitempty"`
 }
 
 type Config struct {
@@ -148,6 +183,7 @@ type Config struct {
 	Address   []string `json:"address"`
 	Peers     []Peer   `json:"peers"`
 	MTU       int      `json:"mtu"`
+	Reserved  []byte   `json:"reserved,omitempty"`
 }
 
 func (w *Wireguard) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDetourConfig, error) {
@@ -190,17 +226,32 @@ func (w *Wireguard) BuildOutboundDetourConfig(allowInsecure bool) (*conf.Outboun
 	// Prepare the address slice safely.
 	addresses := strings.Split(w.LocalAddress, ",")
 
+	peer := Peer{
+		Endpoint:     w.Endpoint,
+		PublicKey:    w.PublicKey,
+		PreSharedKey: w.PreSharedKey,
+	}
+	if w.KeepAlive > 0 {
+		peer.KeepAlive = uint32(w.KeepAlive)
+	}
+	if w.AllowedIPs != "" {
+		var ips []string
+		for _, ip := range strings.Split(w.AllowedIPs, ",") {
+			if ip = strings.TrimSpace(ip); ip != "" {
+				ips = append(ips, ip)
+			}
+		}
+		peer.AllowedIPs = ips
+	}
+
 	cfg := Config{
 		SecretKey: w.SecretKey,
 		Address:   addresses,
-		Peers: []Peer{
-			{
-				Endpoint:     w.Endpoint,
-				PublicKey:    w.PublicKey,
-				PreSharedKey: w.PreSharedKey,
-			},
-		},
-		MTU: int(w.Mtu),
+		Peers:     []Peer{peer},
+		MTU:       int(w.Mtu),
+	}
+	if r := parseReserved(w.Reserved); len(r) > 0 {
+		cfg.Reserved = r
 	}
 
 	jsonData, err := json.Marshal(cfg)

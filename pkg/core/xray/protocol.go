@@ -31,6 +31,8 @@ func (c *Core) CreateProtocol(configLink string) (protocol.Protocol, error) {
 		return NewSocks(configLink), nil
 	case protocol.WireguardIdentifier:
 		return NewWireguard(configLink), nil
+	case protocol.Hysteria2Identifier, "hy2":
+		return NewHysteria2(configLink), nil
 	default:
 		return nil, errors.New("invalid xray protocol")
 	}

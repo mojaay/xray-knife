@@ -11,6 +11,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,20 +31,145 @@ type ProtocolInfo struct {
 }
 
 type Result struct {
-	ConfigLink    string            `csv:"link" json:"link"`         // vmess://... vless//..., etc
-	Protocol      protocol.Protocol `csv:"-" json:"-"`               // The full protocol object for internal use
-	ProtocolInfo  ProtocolInfo      `csv:"-" json:"protocol"`        // Serializable info for the frontend
-	Status        string            `csv:"status" json:"status"`     // passed, semi-passed, failed, broken
-	Reason        string            `csv:"reason" json:"reason"`     // reason of the error
-	TLS           string            `csv:"tls" json:"tls"`           // none, tls, reality
-	RealIPAddr    string            `csv:"ip" json:"ip"`             // Real ip address (req to cloudflare.com/cdn-cgi/trace)
-	Delay         int64             `csv:"delay" json:"delay"`       // millisecond
-	HTTPCode      int               `csv:"code" json:"code"`         // HTTP status code of the tested URL
-	DownloadSpeed float32           `csv:"download" json:"download"`       // mbps
-	UploadSpeed   float32           `csv:"upload" json:"upload"`           // mbps
-	IpAddrLoc     string            `csv:"location" json:"location"`       // IP address location
-	TTFB          int64             `csv:"ttfb" json:"ttfb"`               // Time to first byte (ms)
+	ConfigLink    string            `csv:"link" json:"link"`                // vmess://... vless//..., etc
+	Protocol      protocol.Protocol `csv:"-" json:"-"`                      // The full protocol object for internal use
+	ProtocolInfo  ProtocolInfo      `csv:"-" json:"protocol"`               // Serializable info for the frontend
+	Status        string            `csv:"status" json:"status"`            // passed, semi-passed, failed, broken
+	Reason        string            `csv:"reason" json:"reason"`            // reason of the error
+	TLS           string            `csv:"tls" json:"tls"`                  // none, tls, reality
+	RealIPAddr    string            `csv:"ip" json:"ip"`                    // Real ip address (req to cloudflare.com/cdn-cgi/trace)
+	Delay         int64             `csv:"delay" json:"delay"`              // millisecond
+	HTTPCode      int               `csv:"code" json:"code"`                // HTTP status code of the tested URL
+	DownloadSpeed float32           `csv:"download" json:"download"`        // mbps
+	UploadSpeed   float32           `csv:"upload" json:"upload"`            // mbps
+	IpAddrLoc     string            `csv:"location" json:"location"`        // IP address location
+	TTFB          int64             `csv:"ttfb" json:"ttfb"`                // Time to first byte (ms)
 	ConnectTime   int64             `csv:"connect_time" json:"connectTime"` // Connection time (ms)
+	SuccessCount  int               `csv:"success" json:"successCount"`     // Endpoints that passed (multi-endpoint panel)
+	TotalCount    int               `csv:"total" json:"totalCount"`         // Endpoints probed (multi-endpoint panel)
+	// Per-endpoint visibility: EndpointResults is the structured breakdown
+	// (JSON/web), EndpointSummary is a compact one-line form (CSV/logs).
+	EndpointResults []EndpointResult `csv:"-" json:"endpoints,omitempty"`
+	EndpointSummary string           `csv:"endpoints" json:"endpointSummary"`
+}
+
+// EndpointCheck describes a single destination probed while grading a config.
+// ExpectStatus is the exact HTTP status required for the check to count as a
+// success; 0 means any 2xx response is accepted.
+type EndpointCheck struct {
+	URL          string `json:"url"`
+	Method       string `json:"method"`
+	ExpectStatus int    `json:"expectStatus"`
+}
+
+// EndpointResult records the outcome of probing one panel endpoint, so callers
+// can see which destination failed and why — not just the aggregate count.
+type EndpointResult struct {
+	URL      string `json:"url"`
+	Label    string `json:"label"`            // short host label, e.g. "gstatic.com"
+	Outcome  string `json:"outcome"`          // ok, slow, bad-status, error
+	HTTPCode int    `json:"code"`             // -1 when no response
+	Delay    int64  `json:"delay"`            // ms; -1 when no response
+	Reason   string `json:"reason,omitempty"` // populated on failure
+}
+
+// endpointLabel derives a short, stable label from a URL's host for compact
+// per-endpoint summaries (drops scheme, a leading "www.", and any port).
+func endpointLabel(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		return strings.TrimPrefix(u.Hostname(), "www.")
+	}
+	// Fall back to a trimmed raw string when the URL does not parse.
+	s := strings.TrimPrefix(strings.TrimPrefix(rawURL, "https://"), "http://")
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// summarizeEndpoints renders per-endpoint outcomes as a compact one-line string
+// for CSV/log output, e.g. "gstatic.com=ok(408ms); cloudflare.com=slow(2718ms)".
+func summarizeEndpoints(results []EndpointResult) string {
+	if len(results) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(results))
+	for _, er := range results {
+		switch er.Outcome {
+		case "ok":
+			parts = append(parts, fmt.Sprintf("%s=ok(%dms)", er.Label, er.Delay))
+		case "slow":
+			parts = append(parts, fmt.Sprintf("%s=slow(%dms)", er.Label, er.Delay))
+		case "bad-status":
+			parts = append(parts, fmt.Sprintf("%s=status%d", er.Label, er.HTTPCode))
+		default: // error
+			parts = append(parts, fmt.Sprintf("%s=error", er.Label))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// statusOK reports whether an HTTP status code satisfies an endpoint's
+// expectation. When expect is 0, any 2xx code passes; otherwise the code must
+// match exactly — so a captive portal answering 200 to a generate_204 probe is
+// correctly rejected instead of counted as working.
+func statusOK(code, expect int) bool {
+	if expect != 0 {
+		return code == expect
+	}
+	return code >= 200 && code < 300
+}
+
+// expectedStatusFor infers the success code for a URL when the caller did not
+// set one explicitly: generate_204 endpoints must answer 204, everything else
+// accepts any 2xx.
+func expectedStatusFor(rawURL string) int {
+	if strings.Contains(rawURL, "generate_204") {
+		return 204
+	}
+	return 0
+}
+
+// CheckPresets are named, network-diverse endpoint panels. Each spans a
+// distinct provider/DNS zone, so a config that only reaches one CDN (a common
+// failure of Cloudflare-fronted or server-side-DNS-broken proxies) is graded as
+// partial rather than fully working.
+var CheckPresets = map[string][]EndpointCheck{
+	// cloudflare is the single-endpoint default: just the Cloudflare trace URL.
+	"cloudflare": {
+		{URL: "https://cloudflare.com/cdn-cgi/trace", Method: "GET"},
+	},
+	// gstatic is a single-endpoint Google reachability probe (expects 204).
+	"gstatic": {
+		{URL: "https://www.gstatic.com/generate_204", Method: "GET", ExpectStatus: 204},
+	},
+	"global": {
+		{URL: "https://www.gstatic.com/generate_204", Method: "GET", ExpectStatus: 204},
+		{URL: "https://cloudflare.com/cdn-cgi/trace", Method: "GET"},
+		{URL: "http://www.msftconnecttest.com/connecttest.txt", Method: "GET"},
+		{URL: "https://captive.apple.com/hotspot-detect.html", Method: "GET"},
+	},
+	"google": {
+		{URL: "https://www.gstatic.com/generate_204", Method: "GET", ExpectStatus: 204},
+		{URL: "https://www.youtube.com/generate_204", Method: "GET", ExpectStatus: 204},
+		{URL: "https://play.google.com/generate_204", Method: "GET", ExpectStatus: 204},
+	},
+	"streaming": {
+		{URL: "https://www.youtube.com/generate_204", Method: "GET", ExpectStatus: 204},
+		{URL: "https://www.gstatic.com/generate_204", Method: "GET", ExpectStatus: 204},
+		{URL: "https://cloudflare.com/cdn-cgi/trace", Method: "GET"},
+	},
+}
+
+// PresetNames returns the available preset names, sorted, for CLI help and
+// validation.
+func PresetNames() []string {
+	names := make([]string, 0, len(CheckPresets))
+	for name := range CheckPresets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 type Examiner struct {
@@ -58,9 +184,9 @@ type Examiner struct {
 	// Maximum allowed delay (in ms) — used as the pass/fail latency threshold
 	MaxDelay uint16
 	// Connection timeout (in ms) — used for the HTTP client timeout
-	Timeout  uint16
-	Verbose  bool
-	ShowBody bool
+	Timeout     uint16
+	Verbose     bool
+	ShowBody    bool
 	InsecureTLS bool
 
 	DoSpeedtest bool
@@ -68,8 +194,13 @@ type Examiner struct {
 
 	TestEndpoint           string
 	TestEndpointHttpMethod string
-	SpeedtestKbAmount      uint64
-	Retries                uint8
+	// TestEndpoints, when non-empty, replaces the single TestEndpoint with a
+	// diverse panel: the config is probed against every entry and graded by how
+	// many succeed (see SuccessThreshold).
+	TestEndpoints     []EndpointCheck
+	SuccessThreshold  float64
+	SpeedtestKbAmount uint64
+	Retries           uint8
 
 	// BindInterface pins outbound core dials to a specific OS interface.
 	// Empty disables binding.
@@ -93,10 +224,15 @@ type Options struct {
 	DoIPInfo               bool   `json:"doIPInfo"`
 	TestEndpoint           string `json:"destURL"`
 	TestEndpointHttpMethod string `json:"httpMethod"`
-	SpeedtestKbAmount      uint64 `json:"speedtestAmount"`
-	Retries                uint8  `json:"retries"`
-	BindInterface          string `json:"bindInterface,omitempty"`
-	Logger                 *log.Logger `json:"-"`
+	// TestEndpoints, when non-empty, enables multi-endpoint grading (overrides
+	// the single TestEndpoint). SuccessThreshold is the fraction of endpoints
+	// that must pass for a "passed" verdict (0 defaults to 1.0 = all).
+	TestEndpoints     []EndpointCheck `json:"testEndpoints,omitempty"`
+	SuccessThreshold  float64         `json:"successThreshold,omitempty"`
+	SpeedtestKbAmount uint64          `json:"speedtestAmount"`
+	Retries           uint8           `json:"retries"`
+	BindInterface     string          `json:"bindInterface,omitempty"`
+	Logger            *log.Logger     `json:"-"`
 }
 
 func NewExaminer(opts Options) (*Examiner, error) {
@@ -132,6 +268,12 @@ func NewExaminer(opts Options) (*Examiner, error) {
 		e.Timeout = opts.Timeout
 	} else {
 		e.Timeout = e.MaxDelay
+	}
+
+	e.TestEndpoints = opts.TestEndpoints
+	e.SuccessThreshold = opts.SuccessThreshold
+	if e.SuccessThreshold <= 0 {
+		e.SuccessThreshold = 1.0
 	}
 
 	e.Retries = opts.Retries
@@ -192,6 +334,40 @@ func parseTraceBody(body []byte, r *Result) {
 	}
 }
 
+// checks returns the effective endpoint panel for a test. An explicit panel is
+// used as-is (filling in per-endpoint defaults); otherwise it falls back to the
+// single legacy TestEndpoint, preserving the original single-URL behavior.
+func (e *Examiner) checks() []EndpointCheck {
+	src := e.TestEndpoints
+	if len(src) == 0 {
+		src = []EndpointCheck{{URL: e.TestEndpoint, Method: e.TestEndpointHttpMethod}}
+	}
+	out := make([]EndpointCheck, 0, len(src))
+	for _, c := range src {
+		if c.Method == "" {
+			c.Method = "GET"
+		}
+		if c.ExpectStatus == 0 {
+			c.ExpectStatus = expectedStatusFor(c.URL)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// passesThreshold reports whether the success ratio clears the "passed" bar.
+// All endpoints passing always qualifies; otherwise successes/total must be at
+// least threshold (a small epsilon absorbs float rounding).
+func passesThreshold(successes, total int, threshold float64) bool {
+	if total <= 0 {
+		return false
+	}
+	if successes >= total {
+		return true
+	}
+	return float64(successes)/float64(total)+1e-9 >= threshold
+}
+
 func (e *Examiner) ExamineConfig(ctx context.Context, link string) (Result, error) {
 	r := Result{
 		ConfigLink: link,
@@ -245,31 +421,127 @@ func (e *Examiner) ExamineConfig(ctx context.Context, link string) (Result, erro
 	}
 	defer instance.Close()
 
-	delayResult, err := MeasureDelayDetailed(ctx, client, e.TestEndpoint, e.TestEndpointHttpMethod)
-	if err != nil {
-		r.Status = "failed"
-		r.Reason = err.Error()
-		return r, err
-	}
-	if e.ShowBody {
-		e.Logger.Printf("Response body: \n%s\n", delayResult.Body)
-	}
-	r.Delay = delayResult.Delay
-	r.HTTPCode = delayResult.Code
-	r.TTFB = delayResult.TTFB
-	r.ConnectTime = delayResult.ConnectTime
-	body := delayResult.Body
+	// Build the effective endpoint panel. With no explicit panel this is a
+	// single entry (the legacy TestEndpoint), preserving prior behavior.
+	checks := e.checks()
+	r.TotalCount = len(checks)
 
-	if r.Delay > int64(e.MaxDelay) {
-		r.Status = "timeout"
-		r.Reason = "config delay is more than the maximum allowed delay"
+	var traceBody []byte
+	var firstFailReason string
+	var firstTransportErr error
+	firstRespRecorded := false
+	soleWasTimeout := false
+	successes := 0
+	endpointResults := make([]EndpointResult, 0, len(checks))
+
+	for _, chk := range checks {
+		if ctx.Err() != nil {
+			break
+		}
+		er := EndpointResult{URL: chk.URL, Label: endpointLabel(chk.URL), HTTPCode: -1, Delay: -1}
+
+		dr, derr := MeasureDelayDetailed(ctx, client, chk.URL, chk.Method)
+		if derr != nil {
+			er.Outcome = "error"
+			er.Reason = derr.Error()
+			endpointResults = append(endpointResults, er)
+			if firstFailReason == "" {
+				firstFailReason = fmt.Sprintf("%s: %s", chk.URL, derr.Error())
+			}
+			if firstTransportErr == nil {
+				firstTransportErr = derr
+			}
+			continue
+		}
+
+		er.HTTPCode = dr.Code
+		er.Delay = dr.Delay
+
+		// The first endpoint that returns a response defines the representative
+		// timing reported for the config (used for sorting and display).
+		if !firstRespRecorded {
+			r.Delay = dr.Delay
+			r.HTTPCode = dr.Code
+			r.TTFB = dr.TTFB
+			r.ConnectTime = dr.ConnectTime
+			firstRespRecorded = true
+		}
+		if e.ShowBody {
+			e.Logger.Printf("Response body from %s:\n%s\n", chk.URL, dr.Body)
+		}
+		if len(dr.Body) > 0 && strings.Contains(chk.URL, "/cdn-cgi/trace") {
+			traceBody = dr.Body
+		}
+
+		// A slow-but-alive endpoint and a wrong status are both failures; record
+		// the reason so a fully-failed config explains itself.
+		switch {
+		case dr.Delay > int64(e.MaxDelay):
+			er.Outcome = "slow"
+			er.Reason = fmt.Sprintf("delay %dms exceeds max %dms", dr.Delay, e.MaxDelay)
+			if firstFailReason == "" {
+				firstFailReason = fmt.Sprintf("%s: %s", chk.URL, er.Reason)
+			}
+			soleWasTimeout = true
+		case !statusOK(dr.Code, chk.ExpectStatus):
+			er.Outcome = "bad-status"
+			if chk.ExpectStatus != 0 {
+				er.Reason = fmt.Sprintf("unexpected HTTP status %d (want %d)", dr.Code, chk.ExpectStatus)
+			} else {
+				er.Reason = fmt.Sprintf("unexpected HTTP status %d", dr.Code)
+			}
+			if firstFailReason == "" {
+				firstFailReason = fmt.Sprintf("%s: %s", chk.URL, er.Reason)
+			}
+			soleWasTimeout = false
+		default:
+			er.Outcome = "ok"
+			successes++
+		}
+		endpointResults = append(endpointResults, er)
+	}
+	r.SuccessCount = successes
+	r.EndpointResults = endpointResults
+	r.EndpointSummary = summarizeEndpoints(endpointResults)
+	total := len(checks)
+
+	// Grade the config from how many panel endpoints passed.
+	switch {
+	case passesThreshold(successes, total, e.SuccessThreshold):
+		r.Status = "passed"
+		if total > 1 {
+			r.Reason = fmt.Sprintf("%d/%d endpoints reachable", successes, total)
+		}
+	case successes > 0:
+		r.Status = "semi-passed"
+		r.Reason = fmt.Sprintf("%d/%d endpoints reachable", successes, total)
+	default:
+		// Nothing passed. For the single-endpoint path, preserve the original
+		// failed/timeout contract (and returned error) so existing callers and
+		// the proxy health check behave exactly as before.
+		if total == 1 && !firstRespRecorded {
+			r.Status = "failed"
+			r.Reason = firstFailReason
+			return r, firstTransportErr
+		}
+		if total == 1 && soleWasTimeout {
+			r.Status = "timeout"
+			r.Reason = "config delay is more than the maximum allowed delay"
+			return r, errors.New(r.Reason)
+		}
+		r.Status = "failed"
+		if firstFailReason != "" {
+			r.Reason = firstFailReason
+		} else {
+			r.Reason = "all endpoints failed"
+		}
 		return r, errors.New(r.Reason)
 	}
 
 	if e.DoIPInfo {
-		// If the latency test URL was already the trace endpoint, use its body.
-		if strings.Contains(e.TestEndpoint, "/cdn-cgi/trace") {
-			parseTraceBody(body, &r)
+		// Reuse a trace body captured during the panel run if one is available.
+		if len(traceBody) > 0 {
+			parseTraceBody(traceBody, &r)
 		} else {
 			// Otherwise, make a dedicated request for the IP info.
 			// Use a standard, reliable trace endpoint.

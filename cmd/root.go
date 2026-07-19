@@ -22,7 +22,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:     "xray-knife",
 	Short:   "Swiss Army Knife for xray-core & sing-box",
-	Version: "10.0.0",
+	Version: "10.1.0",
 }
 
 // Execute is called by main() to kick everything off.

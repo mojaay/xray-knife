@@ -38,24 +38,25 @@ func (s *Shadowsocks) Parse() error {
 	}
 
 	secondPart := strings.SplitN(s.OrigLink[5:], "@", 2)
-
-	var decoded []byte
-	// Encryption part - b64 encoded (EncryptionType : Password)
-	if len(secondPart) > 1 {
-		decoded, err = utils.Base64Decode(secondPart[0])
-		if err != nil {
-			return errors.New("error when decoding secret part")
-		}
-	} else {
+	if len(secondPart) <= 1 {
 		return errors.New("invalid config link")
 	}
 
-	//link := "ss://" + string(decoded) + "@" + secondPart[1]
-	//uri, err := url.Parse(link)
-	//if err != nil {
-	//	return err
-	//}
-	creds := strings.SplitN(string(decoded), ":", 2)
+	// The userinfo is either SIP002 base64(method:password) OR a plain
+	// "method:password" (common for SS-2022 links from sing-box /
+	// shadowsocks-rust). Try base64 first, then fall back to plain
+	// (percent-decoded) so both forms parse.
+	userInfo := secondPart[0]
+	var methodPass string
+	if decoded, decErr := utils.Base64Decode(userInfo); decErr == nil && strings.Contains(string(decoded), ":") {
+		methodPass = string(decoded)
+	} else if unescaped, uerr := url.QueryUnescape(userInfo); uerr == nil {
+		methodPass = unescaped
+	} else {
+		methodPass = userInfo
+	}
+
+	creds := strings.SplitN(methodPass, ":", 2)
 	if len(creds) != 2 {
 		return errors.New("error when decoding secret part")
 	}

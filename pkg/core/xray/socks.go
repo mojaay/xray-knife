@@ -42,14 +42,25 @@ func (s *Socks) Parse() error {
 		return err
 	}
 
-	if len(uri.User.String()) != 0 {
-		userB64, _ := utils.Base64Decode(uri.User.String())
-		creds := strings.Split(string(userB64), ":")
-		s.Username = creds[0]
-		s.Password = creds[1]
+	if uri.User != nil && len(uri.User.String()) != 0 {
+		if password, hasPassword := uri.User.Password(); hasPassword {
+			// Plain "user:pass" userinfo.
+			s.Username = uri.User.Username()
+			s.Password = password
+		} else if decoded, decErr := utils.Base64Decode(uri.User.Username()); decErr == nil {
+			if user, pass, found := strings.Cut(string(decoded), ":"); found {
+				// Base64-encoded "user:pass".
+				s.Username = user
+				s.Password = pass
+			} else {
+				// Base64 without a colon: treat the raw userinfo as the username.
+				s.Username = uri.User.Username()
+			}
+		} else {
+			// Not base64: treat the raw userinfo as the username.
+			s.Username = uri.User.Username()
+		}
 	}
-
-	s.OrigLink = s.OrigLink
 
 	return err
 }

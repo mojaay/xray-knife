@@ -159,6 +159,12 @@ func (v *Vmess) Parse() error {
 		}
 	}
 
+	// Default the transport network to "tcp" when unset, mirroring VLESS/Trojan.
+	// An empty network makes conf.TransportProtocol.Build() hard-error.
+	if v.Network == "" {
+		v.Network = "tcp"
+	}
+
 	return err
 }
 
@@ -291,8 +297,8 @@ func (v *Vmess) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDet
 		}
 		break
 	case "kcp":
+		// mKCP header/seed removed from xray-core; use bare defaults.
 		s.KCPSettings = &conf.KCPConfig{}
-		s.KCPSettings.HeaderConfig = json.RawMessage([]byte(fmt.Sprintf(`{ "type": "%s" }`, v.Type)))
 		break
 	case "ws":
 		s.WSSettings = &conf.WebSocketConfig{}
@@ -335,10 +341,8 @@ func (v *Vmess) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDet
 				v.Path = v.Path[1:]
 			}
 		}
-		multiMode := false
-		if v.Type != "gun" {
-			multiMode = true
-		}
+		// multiMode is enabled only when explicitly requested (default: "gun").
+		multiMode := v.Type == "multi"
 		s.GRPCSettings = &conf.GRPCConfig{
 			InitialWindowsSize: 65536,
 			HealthCheckTimeout: 20,
@@ -362,20 +366,32 @@ func (v *Vmess) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDet
 	}
 
 	if v.TLS == "tls" {
+		insecureFlag := allowInsecure
+		if s, ok := v.AllowInsecure.(string); ok && (s == "1" || s == "true") {
+			insecureFlag = true
+		}
+		if b, ok := v.AllowInsecure.(bool); ok && b {
+			insecureFlag = true
+		}
 		if v.TlsFingerprint == "" {
 			v.TlsFingerprint = "chrome"
 		}
 		s.TLSSettings = &conf.TLSConfig{
-			Fingerprint:   v.TlsFingerprint,
-			AllowInsecure: allowInsecure,
+			Fingerprint: v.TlsFingerprint,
 		}
 		if v.SNI != "" {
 			s.TLSSettings.ServerName = v.SNI
 		} else {
 			s.TLSSettings.ServerName = v.Host
 		}
+		// xray-core removed "allowInsecure"; emulate with verifyPeerCertByName
+		// (accepts self-signed certs valid for this name). See vless.go.
+		if insecureFlag && s.TLSSettings.ServerName != "" {
+			s.TLSSettings.VerifyPeerCertByName = s.TLSSettings.ServerName
+		}
 		if v.ALPN != "" {
-			s.TLSSettings.ALPN = &conf.StringList{v.ALPN}
+			alpns := conf.StringList(strings.Split(v.ALPN, ","))
+			s.TLSSettings.ALPN = &alpns
 		}
 	}
 
@@ -452,8 +468,8 @@ func (v *Vmess) BuildInboundDetourConfig() (*conf.InboundDetourConfig, error) {
 			`, string(pathb), string(hostb))))
 		}
 	case "kcp":
+		// mKCP header/seed removed from xray-core; use bare defaults.
 		streamConfig.KCPSettings = &conf.KCPConfig{}
-		streamConfig.KCPSettings.HeaderConfig = json.RawMessage([]byte(fmt.Sprintf(`{ "type": "%s" }`, v.Type)))
 	case "ws":
 		streamConfig.WSSettings = &conf.WebSocketConfig{}
 		streamConfig.WSSettings.Path = v.Path
@@ -485,10 +501,8 @@ func (v *Vmess) BuildInboundDetourConfig() (*conf.InboundDetourConfig, error) {
 				v.Path = v.Path[1:]
 			}
 		}
-		multiMode := false
-		if v.Type != "gun" {
-			multiMode = true
-		}
+		// multiMode is enabled only when explicitly requested (default: "gun").
+		multiMode := v.Type == "multi"
 		streamConfig.GRPCSettings = &conf.GRPCConfig{
 			InitialWindowsSize: 65536,
 			HealthCheckTimeout: 20,

@@ -19,6 +19,10 @@ jobs:
           # For Android ARM 8 (added in your original build.sh as a specific case)
           - goos: android
             goarch: arm64
+            # anet (pulled in transitively via pion) uses //go:linkname to the
+            # private net.zoneCache on android; the Go 1.23+ linker rejects this
+            # ("invalid reference to net.zoneCache"). Relax the check for android.
+            extra_ldflags: "-checklinkname=0"
       fail-fast: false
 
     runs-on: ubuntu-latest
@@ -41,7 +45,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.25.6'
+          go-version: '1.26'
 
       - name: Download Project dependencies
         run: go mod download
@@ -49,7 +53,7 @@ jobs:
       - name: Build the application
         run: |
           mkdir -p build_assets
-          go build -v -o build_assets/xray-knife -tags="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_grpc" -ldflags "-s -w -buildid="
+          go build -v -o build_assets/xray-knife -tags="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_grpc" -ldflags "-s -w -buildid= ${{ matrix.extra_ldflags }}"
 
       - name: Rename Windows binary
         if: matrix.goos == 'windows'

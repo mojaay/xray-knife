@@ -62,6 +62,7 @@ type Config struct {
 	Speedtest           bool
 	GetIPInfo           bool
 	SpeedtestAmount     uint64
+	SpeedtestTimeout    uint16
 	MaximumAllowedDelay uint16
 	Timeout             uint16
 	Retries             uint16
@@ -182,6 +183,7 @@ Use --from-db to test configs from the database library.`,
 				TestEndpoints:          panel,
 				SuccessThreshold:       config.SuccessThreshold,
 				SpeedtestKbAmount:      config.SpeedtestAmount,
+				SpeedtestTimeout:       config.SpeedtestTimeout,
 				BindInterface:          config.BindInterface,
 			})
 			if err != nil {
@@ -404,6 +406,7 @@ func handleMultipleConfigs(examiner *pkghttp.Examiner, config *Config, links []s
 		TestEndpoints:          panel,
 		SuccessThreshold:       config.SuccessThreshold,
 		SpeedtestKbAmount:      config.SpeedtestAmount,
+		SpeedtestTimeout:       config.SpeedtestTimeout,
 		BindInterface:          config.BindInterface,
 	}
 	optsJson, err := json.Marshal(opts)
@@ -627,6 +630,7 @@ func addFlags(cmd *cobra.Command, config *Config) {
 	// Speedtest flags
 	flags.BoolVarP(&config.Speedtest, "speedtest", "p", false, "Speed test with speed.cloudflare.com")
 	flags.Uint64VarP(&config.SpeedtestAmount, "amount", "a", 10000, "Download and upload amount (KB)")
+	flags.Uint16Var(&config.SpeedtestTimeout, "speedtest-timeout", 30, "Time budget for each speedtest direction (seconds). Raise it for slow links or a large --amount.")
 
 	flags.BoolVarP(&config.GetIPInfo, "rip", "r", true, "Receive real IP (csv)")
 	flags.BoolVarP(&config.Verbose, "verbose", "v", false, "Verbose")

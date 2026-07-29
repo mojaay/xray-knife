@@ -13,6 +13,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/fatih/color"
@@ -51,6 +52,14 @@ type Result struct {
 	// (JSON/web), EndpointSummary is a compact one-line form (CSV/logs).
 	EndpointResults []EndpointResult `csv:"-" json:"endpoints,omitempty"`
 	EndpointSummary string           `csv:"endpoints" json:"endpointSummary"`
+}
+
+// appendReason adds a note to Reason, keeping any note already recorded.
+func (r *Result) appendReason(reason string) {
+	if r.Reason != "" {
+		r.Reason += "; "
+	}
+	r.Reason += reason
 }
 
 // EndpointCheck describes a single destination probed while grading a config.
@@ -200,6 +209,7 @@ type Examiner struct {
 	TestEndpoints     []EndpointCheck
 	SuccessThreshold  float64
 	SpeedtestKbAmount uint64
+	SpeedtestTimeout  uint16
 	Retries           uint8
 
 	// BindInterface pins outbound core dials to a specific OS interface.
@@ -210,6 +220,7 @@ type Examiner struct {
 }
 
 const FailedDelay int64 = -1
+const defaultSpeedtestTimeout = 30 * time.Second
 
 type Options struct {
 	Core         string    `json:"core"`
@@ -230,6 +241,7 @@ type Options struct {
 	TestEndpoints     []EndpointCheck `json:"testEndpoints,omitempty"`
 	SuccessThreshold  float64         `json:"successThreshold,omitempty"`
 	SpeedtestKbAmount uint64          `json:"speedtestAmount"`
+	SpeedtestTimeout  uint16          `json:"speedtestTimeout,omitempty"`
 	Retries           uint8           `json:"retries"`
 	BindInterface     string          `json:"bindInterface,omitempty"`
 	Logger            *log.Logger     `json:"-"`
@@ -256,6 +268,7 @@ func NewExaminer(opts Options) (*Examiner, error) {
 	if opts.SpeedtestKbAmount != 0 {
 		e.SpeedtestKbAmount = opts.SpeedtestKbAmount
 	}
+	e.SpeedtestTimeout = opts.SpeedtestTimeout
 	if opts.TestEndpoint != "" {
 		e.TestEndpoint = opts.TestEndpoint
 	}
@@ -547,18 +560,12 @@ func (e *Examiner) ExamineConfig(ctx context.Context, link string) (Result, erro
 			// Use a standard, reliable trace endpoint.
 			req, reqErr := http.NewRequestWithContext(ctx, "GET", "https://cloudflare.com/cdn-cgi/trace", nil)
 			if reqErr != nil {
-				if r.Reason != "" {
-					r.Reason += "; "
-				}
-				r.Reason += "ip_info_failed"
+				r.appendReason("ip_info_failed")
 				r.Status = "semi-passed"
 			} else {
 				_, ipBody, _, traceErr := CoreHTTPRequestCustom(ctx, client, 10*time.Second, req)
 				if traceErr != nil {
-					if r.Reason != "" {
-						r.Reason += "; "
-					}
-					r.Reason += "ip_info_failed"
+					r.appendReason("ip_info_failed")
 					r.Status = "semi-passed"
 				} else {
 					parseTraceBody(ipBody, &r)
@@ -568,22 +575,7 @@ func (e *Examiner) ExamineConfig(ctx context.Context, link string) (Result, erro
 	}
 
 	if e.DoSpeedtest {
-		downloadStartTime := time.Now()
-		_, _, bytesRead, dlErr := CoreHTTPRequestCustom(ctx, client, 20*time.Second, speedtest.MakeDownloadHTTPRequest(false, e.SpeedtestKbAmount*1000))
-		if dlErr == nil {
-			downloadTime := time.Since(downloadStartTime).Milliseconds()
-			// Use actual bytes received for accurate speed calculation
-			r.DownloadSpeed = (float32(bytesRead*8) / (float32(downloadTime) / float32(1000.0))) / float32(1000000.0)
-		}
-
-		uploadStartTime := time.Now()
-		byteAmount := e.SpeedtestKbAmount * 1000
-		_, _, _, ulErr := CoreHTTPRequestCustom(ctx, client, 20*time.Second, speedtest.MakeUploadHTTPRequest(false, byteAmount))
-		if ulErr == nil {
-			uploadTime := time.Since(uploadStartTime).Milliseconds()
-			// For upload, use intended byte amount (request body is locally generated)
-			r.UploadSpeed = (float32(byteAmount*8) / (float32(uploadTime) / float32(1000.0))) / float32(1000000.0)
-		}
+		e.runSpeedtest(ctx, client, &r)
 	}
 
 	return r, nil
@@ -684,6 +676,130 @@ func (z zeroReader) Read(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// countingReader wraps an io.Reader and counts the total bytes read from it,
+// so a truncated transfer is measured by what actually moved rather than by
+// what was requested.
+type countingReader struct {
+	r io.Reader
+	n atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// speedtestTimeout is the per-direction budget for a speed test.
+func (e *Examiner) speedtestTimeout() time.Duration {
+	if e.SpeedtestTimeout == 0 {
+		return defaultSpeedtestTimeout
+	}
+	return time.Duration(e.SpeedtestTimeout) * time.Second
+}
+
+// runSpeedtest measures throughput in both directions and records it on r.
+func (e *Examiner) runSpeedtest(ctx context.Context, client *http.Client, r *Result) {
+	// Do not reuse the caller's client
+	stClient := &http.Client{
+		Transport:     client.Transport,
+		CheckRedirect: client.CheckRedirect,
+		Jar:           client.Jar,
+	}
+	amount := e.SpeedtestKbAmount * 1000
+	timeout := e.speedtestTimeout()
+
+	if speed, err := measureDownload(ctx, stClient, timeout, amount); err != nil {
+		r.appendReason(fmt.Sprintf("speedtest_download_failed: %v", err))
+	} else {
+		r.DownloadSpeed = speed
+	}
+
+	if speed, err := measureUpload(ctx, stClient, timeout, amount); err != nil {
+		r.appendReason(fmt.Sprintf("speedtest_upload_failed: %v", err))
+	} else {
+		r.UploadSpeed = speed
+	}
+}
+
+// measureDownload pulls amount bytes from the speed test endpoint and returns
+// the throughput in Mbps.
+func measureDownload(ctx context.Context, client *http.Client, timeout time.Duration, amount uint64) (float32, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req := speedtest.MakeDownloadHTTPRequest(false, amount)
+	firstByte := time.Now()
+	trace := &httptrace.ClientTrace{
+		GotFirstResponseByte: func() { firstByte = time.Now() },
+	}
+	req = req.WithContext(httptrace.WithClientTrace(reqCtx, trace))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	read, copyErr := io.Copy(io.Discard, resp.Body)
+	elapsed := time.Since(firstByte)
+	if copyErr != nil {
+		return 0, fmt.Errorf("read body after %d bytes: %w", read, copyErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("unexpected status %s", resp.Status)
+	}
+	return mbps(read, elapsed)
+}
+
+// measureUpload pushes amount bytes to the speed test endpoint and returns the
+// throughput in Mbps.
+func measureUpload(ctx context.Context, client *http.Client, timeout time.Duration, amount uint64) (float32, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req := speedtest.MakeUploadHTTPRequest(false, amount)
+
+	counter := &countingReader{}
+	newBody := func() io.ReadCloser {
+		counter.r = io.LimitReader(zeroReader{}, int64(amount))
+		counter.n.Store(0)
+		return io.NopCloser(counter)
+	}
+	req.Body = newBody()
+	req.GetBody = func() (io.ReadCloser, error) { return newBody(), nil }
+
+	bodyStart, gotResponse := time.Now(), time.Now()
+	trace := &httptrace.ClientTrace{
+		WroteHeaders:         func() { bodyStart = time.Now() },
+		GotFirstResponseByte: func() { gotResponse = time.Now() },
+	}
+	req = req.WithContext(httptrace.WithClientTrace(reqCtx, trace))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("unexpected status %s", resp.Status)
+	}
+	return mbps(counter.n.Load(), gotResponse.Sub(bodyStart))
+}
+
+// mbps converts a transferred byte count and its duration into megabits/sec.
+func mbps(bytes int64, d time.Duration) (float32, error) {
+	if bytes <= 0 {
+		return 0, errors.New("no bytes transferred")
+	}
+	if d <= 0 {
+		return 0, errors.New("transfer too fast to time")
+	}
+	return float32(float64(bytes) * 8 / d.Seconds() / 1e6), nil
+}
+
 func CoreHTTPRequest(ctx context.Context, client *http.Client, method, dest string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, dest, nil)
 	if err != nil {
@@ -752,7 +868,9 @@ func (c *SpeedTester) MakeUploadHTTPRequest(noTLS bool, amount uint64) *http.Req
 	}
 	// Use io.LimitReader to avoid allocating a massive string for the body.
 	// This is more memory-efficient and avoids int overflow on 32-bit systems.
-	bodyReader := io.LimitReader(zeroReader{}, int64(amount))
+	newBody := func() io.ReadCloser {
+		return io.NopCloser(io.LimitReader(zeroReader{}, int64(amount)))
+	}
 	req := &http.Request{
 		Method: "POST",
 		URL: &url.URL{
@@ -762,8 +880,11 @@ func (c *SpeedTester) MakeUploadHTTPRequest(noTLS bool, amount uint64) *http.Req
 		},
 		Header:        make(http.Header),
 		Host:          c.SNI,
-		Body:          io.NopCloser(bodyReader),
+		Body:          newBody(),
 		ContentLength: int64(amount),
+		// Without GetBody the transport cannot replay the body on a redirect
+		// or a retried idempotent attempt.
+		GetBody: func() (io.ReadCloser, error) { return newBody(), nil },
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	return req

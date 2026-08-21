@@ -13,6 +13,8 @@ import (
 
 	"github.com/lilendian0x00/xray-knife/v11/web"
 	"github.com/spf13/cobra"
+
+	"github.com/lilendian0x00/xray-knife/v11/utils/xkhome"
 )
 
 const (
@@ -88,12 +90,11 @@ func newWebUICommand() *cobra.Command {
 for all of xray-knife's core functionalities, including proxy management,
 configuration testing, and scanning.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Find home directory to locate the config file
-			home, err := os.UserHomeDir()
+			// Locate the config file inside the xray-knife state directory
+			configDir, err := xkhome.Dir()
 			if err != nil {
-				return fmt.Errorf("could not find user home directory: %w", err)
+				return fmt.Errorf("could not resolve the xray-knife directory: %w", err)
 			}
-			configDir := filepath.Join(home, ".xray-knife")
 			configFilePath := filepath.Join(configDir, webuiConfigFilename)
 
 			// Determine final credentials based on priority: flags > env > file > generate

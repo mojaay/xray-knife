@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/lilendian0x00/xray-knife/v11/utils/xkhome"
 )
 
 // Settings holds the previous OS proxy configuration so it can be restored.
@@ -24,12 +26,8 @@ type Manager interface {
 
 // stateFilePath returns the path where we save proxy state for crash recovery.
 func stateFilePath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := xkhome.Dir()
 	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".xray-knife")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, ".sysproxy-state.json"), nil

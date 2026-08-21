@@ -27,6 +27,9 @@ var CFscannerCmd = &cobra.Command{
 speed testing, and can resume scans from previous results. The results are saved
 in a CSV file for easy analysis and reuse. You can provide subnets directly, or
 pass a file containing one subnet per line.`,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return validateConfigLink(cliConfig.ConfigLink)
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		var allSubnets []string
 		for _, arg := range cliConfig.Subnets {
@@ -114,29 +117,53 @@ pass a file containing one subnet per line.`,
 	},
 }
 
+// validateConfigLink rejects a --config value that is not a proxy link. In v10
+// the -c shorthand meant --speedtest-top, so a stale script passes an integer
+// here; say so instead of failing later with an opaque parse error.
+func validateConfigLink(link string) error {
+	if link == "" || strings.Contains(link, "://") {
+		return nil
+	}
+	return fmt.Errorf("--config expects a proxy link (e.g. vless://...), got %q\n"+
+		"note: -c was --speedtest-top before v11; use --speedtest-top %s for the old behaviour", link, link)
+}
+
 func init() {
-	CFscannerCmd.Flags().StringSliceVarP(&cliConfig.Subnets, "subnets", "s", nil, "Subnet(s) or file containing subnets (e.g., \"1.1.1.1/24,2.2.2.2/16\")")
-	CFscannerCmd.Flags().IntVarP(&cliConfig.ThreadCount, "threads", "t", 100, "Count of threads for latency scan")
-	CFscannerCmd.Flags().BoolVarP(&cliConfig.DoSpeedtest, "speedtest", "p", false, "Measure download/upload speed on the fastest IPs")
-	CFscannerCmd.Flags().IntVarP(&cliConfig.SpeedtestTop, "speedtest-top", "c", 10, "Number of fastest IPs to select for speed testing")
-	CFscannerCmd.Flags().IntVar(&cliConfig.SpeedtestConcurrency, "speedtest-concurrency", 4, "Number of concurrent speed tests to run")
-	CFscannerCmd.Flags().IntVar(&cliConfig.SpeedtestTimeout, "speedtest-timeout", 30, "Total timeout in seconds for one IP's speed test")
-	CFscannerCmd.Flags().IntVarP(&cliConfig.RequestTimeout, "timeout", "u", 5000, "Individual request timeout (in ms)")
-	CFscannerCmd.Flags().BoolVarP(&cliConfig.ShowTraceBody, "body", "b", false, "Show trace body output")
-	CFscannerCmd.Flags().BoolVarP(&cliConfig.Verbose, "verbose", "v", false, "Show verbose output with detailed errors")
-	CFscannerCmd.Flags().BoolVarP(&cliConfig.ShuffleSubnets, "shuffle-subnet", "e", false, "Shuffle list of Subnets")
-	CFscannerCmd.Flags().BoolVarP(&cliConfig.ShuffleIPs, "shuffle-ip", "i", false, "Shuffle list of IPs")
-	CFscannerCmd.Flags().StringVarP(&cliConfig.OutputFile, "output", "o", "results.csv", "Output file to save sorted results (in CSV format)")
-	CFscannerCmd.Flags().IntVarP(&cliConfig.RetryCount, "retry", "r", 1, "Number of times to retry TCP connection on failure")
-	CFscannerCmd.Flags().BoolVarP(&cliConfig.OnlySpeedtestResults, "only-speedtest", "k", false, "Only display results that have successful speedtest data")
-	CFscannerCmd.Flags().IntVarP(&cliConfig.DownloadMB, "download-mb", "d", 20, "Custom amount of data to download for speedtest (in MB)")
-	CFscannerCmd.Flags().IntVarP(&cliConfig.UploadMB, "upload-mb", "m", 10, "Custom amount of data to upload for speedtest (in MB)")
-	CFscannerCmd.Flags().StringVarP(&cliConfig.ConfigLink, "config", "C", "", "Use a config link as a proxy to test IPs")
-	CFscannerCmd.Flags().BoolVarP(&cliConfig.InsecureTLS, "insecure", "E", false, "Allow insecure TLS connections for the proxy config")
-	CFscannerCmd.Flags().BoolVar(&cliConfig.Resume, "resume", false, "Resume scan from previous results (file or DB)")
-	CFscannerCmd.Flags().BoolVar(&cliConfig.SaveToDB, "save-db", false, "Save scan results to the database")
-	CFscannerCmd.Flags().IntVarP(&cliConfig.Port, "port", "P", 443, "TCP port to scan (Cloudflare also accepts 2053, 2083, 2087, 2096, 8443)")
-	CFscannerCmd.Flags().StringVar(&cliConfig.BindInterface, "bind", "", "Bind outbound dials to a specific OS interface (e.g. eth0). Linux: needs CAP_NET_RAW.")
+	f := CFscannerCmd.Flags()
+
+	// Shorthands follow the canonical map in cmd/shorthands.go. Anything not
+	// typed interactively week to week is long-only.
+	f.StringSliceVarP(&cliConfig.Subnets, "subnets", "s", nil, "Subnet(s) or file containing subnets (e.g., \"1.1.1.1/24,2.2.2.2/16\")")
+	f.IntVarP(&cliConfig.ThreadCount, "threads", "t", 100, "Count of threads for latency scan")
+	f.StringVarP(&cliConfig.OutputFile, "out", "o", "results.csv", "Output file to save sorted results (in CSV format)")
+	f.StringVarP(&cliConfig.ConfigLink, "config", "c", "", "Use a config link as a proxy to test IPs")
+	f.IntVarP(&cliConfig.Port, "port", "p", 443, "TCP port to scan (Cloudflare also accepts 2053, 2083, 2087, 2096, 8443)")
+	f.BoolVarP(&cliConfig.ShowTraceBody, "body", "b", false, "Show trace body output")
+	f.BoolVarP(&cliConfig.Verbose, "verbose", "v", false, "Show verbose output with detailed errors")
+	f.BoolVarP(&cliConfig.DoSpeedtest, "speedtest", "S", false, "Measure download/upload speed on the fastest IPs")
+
+	// -e is deliberately left unbound in v11: it meant --shuffle-subnet in v10
+	// and both flags are booleans, so rebinding it to --insecure would silently
+	// change behaviour. It becomes --insecure in v12.
+	f.BoolVar(&cliConfig.InsecureTLS, "insecure", false, "Allow insecure TLS connections for the proxy config")
+
+	f.IntVar(&cliConfig.SpeedtestTop, "speedtest-top", 10, "Number of fastest IPs to select for speed testing")
+	f.IntVar(&cliConfig.SpeedtestConcurrency, "speedtest-concurrency", 4, "Number of concurrent speed tests to run")
+	f.IntVar(&cliConfig.SpeedtestTimeout, "speedtest-timeout", 30, "Total timeout in seconds for one IP's speed test")
+	f.IntVar(&cliConfig.RequestTimeout, "timeout", 5000, "Individual request timeout (in ms)")
+	f.IntVar(&cliConfig.RetryCount, "retry", 1, "Number of times to retry TCP connection on failure")
+	f.BoolVar(&cliConfig.OnlySpeedtestResults, "only-speedtest", false, "Only display results that have successful speedtest data")
+	f.IntVar(&cliConfig.DownloadMB, "download-mb", 20, "Custom amount of data to download for speedtest (in MB)")
+	f.IntVar(&cliConfig.UploadMB, "upload-mb", 10, "Custom amount of data to upload for speedtest (in MB)")
+	f.BoolVar(&cliConfig.ShuffleSubnets, "shuffle-subnet", false, "Shuffle list of Subnets")
+	f.BoolVar(&cliConfig.ShuffleIPs, "shuffle-ip", false, "Shuffle list of IPs")
+	f.BoolVar(&cliConfig.Resume, "resume", false, "Resume scan from previous results (file or DB)")
+	f.BoolVar(&cliConfig.SaveToDB, "save-db", false, "Save scan results to the database")
+	f.StringVar(&cliConfig.BindInterface, "bind", "", "Bind outbound dials to a specific OS interface (e.g. eth0). Linux: needs CAP_NET_RAW.")
+
+	// --output was renamed to --out in v11 to match http and subs.
+	f.StringVar(&cliConfig.OutputFile, "output", "results.csv", "Deprecated alias for --out")
+	_ = f.MarkDeprecated("output", "use --out")
 
 	_ = CFscannerCmd.MarkFlagRequired("subnets")
 }

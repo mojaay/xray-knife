@@ -109,5 +109,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&dbPathOverride, "db", "",
 		"Path to the xray-knife SQLite database (default: $XRAY_KNIFE_HOME/xray-knife.db, else ~/.xray-knife/xray-knife.db)")
 
+	rootCmd.SetFlagErrorFunc(flagErrorFunc)
+
 	addSubcommandPalettes()
 }

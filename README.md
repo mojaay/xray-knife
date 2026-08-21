@@ -60,7 +60,7 @@ chmod +x xray-knife
 
 If you have Go (1.25) installed, you can build and install `xray-knife` with a single command:
 ```bash
-go install github.com/lilendian0x00/xray-knife/v10@latest
+go install github.com/lilendian0x00/xray-knife/v11@latest
 ```
 
 ### Arch linux aur
@@ -71,10 +71,31 @@ paru -S xray-knife-bin ||
 pikaur -S xray-knife-bin
 ```
 
+## 🚀 Quickstart
+
+Three commands take you from a subscription link to a working local proxy:
+
+```bash
+# 1. Add a subscription and pull its configs into the local database.
+#    Fetched links are also written to configs.txt.
+xray-knife subs add --url "https://example.com/sub" --remark "My VPN"
+xray-knife subs fetch --all
+
+# 2. Test the fetched configs; working ones land in valid.txt, fastest first.
+xray-knife http -f configs.txt
+
+# 3. Run a local SOCKS proxy on 127.0.0.1:9999 that rotates through them.
+xray-knife proxy inbound -f valid.txt
+```
+
 ## 🛠️ Usage
 
 `xray-knife` is a command-line tool with a clear and consistent command structure:
 `xray-knife [command] [flags]`
+
+Shorthand flags mean the same thing in every command — `-c` is always a config
+link, `-f` a file of links, `-o` an output file, `-p` a port, `-v` verbose.
+See [MIGRATION-v11.md](MIGRATION-v11.md) if you are coming from v10.
 
 Here are some practical examples for the main commands.
 
@@ -176,7 +197,7 @@ Start a local SOCKS5 proxy on port `9999`. It will load all enabled configs from
 xray-knife proxy inbound -f ./configs.txt --port 9999 --rotate 300
 
 # Proxy to configs from a file and no auth socks
-xray-knife proxy inbound -f ./configs.txt --rotate 800 -I socks://0.0.0.0:9999#Listener
+xray-knife proxy inbound -f ./configs.txt --rotate 800 --inbound-config socks://0.0.0.0:9999#Listener
 
 # Proxy to configs from your database
 xray-knife proxy inbound --port 9999 --rotate 300

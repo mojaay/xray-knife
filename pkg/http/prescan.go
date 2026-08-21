@@ -10,9 +10,9 @@ import (
 
 	"github.com/alitto/pond/v2"
 
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core/protocol"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/netbind"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/netbind"
 )
 
 const (

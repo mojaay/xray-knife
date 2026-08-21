@@ -1,28 +1,65 @@
 package cmd
 
 import (
-	"log"
 	"os"
-	"path/filepath"
+	"runtime/debug"
 
-	"github.com/lilendian0x00/xray-knife/v10/cmd/cfscanner"
-	xkexec "github.com/lilendian0x00/xray-knife/v10/cmd/exec"
-	"github.com/lilendian0x00/xray-knife/v10/cmd/http"
-	"github.com/lilendian0x00/xray-knife/v10/cmd/net"
-	"github.com/lilendian0x00/xray-knife/v10/cmd/parse"
-	"github.com/lilendian0x00/xray-knife/v10/cmd/proxy"
-	"github.com/lilendian0x00/xray-knife/v10/cmd/subs"
-	"github.com/lilendian0x00/xray-knife/v10/cmd/webui"
-	"github.com/lilendian0x00/xray-knife/v10/database"
-	"github.com/lilendian0x00/xray-knife/v10/utils/customlog"
+	"github.com/lilendian0x00/xray-knife/v11/cmd/cfscanner"
+	xkexec "github.com/lilendian0x00/xray-knife/v11/cmd/exec"
+	"github.com/lilendian0x00/xray-knife/v11/cmd/http"
+	"github.com/lilendian0x00/xray-knife/v11/cmd/net"
+	"github.com/lilendian0x00/xray-knife/v11/cmd/parse"
+	"github.com/lilendian0x00/xray-knife/v11/cmd/proxy"
+	"github.com/lilendian0x00/xray-knife/v11/cmd/subs"
+	"github.com/lilendian0x00/xray-knife/v11/cmd/webui"
+	"github.com/lilendian0x00/xray-knife/v11/database"
+	"github.com/lilendian0x00/xray-knife/v11/utils/customlog"
+	"github.com/lilendian0x00/xray-knife/v11/utils/xkhome"
 	"github.com/spf13/cobra"
 )
 
+// version is stamped at build time:
+//
+//	go build -ldflags "-X github.com/lilendian0x00/xray-knife/v11/cmd.version=11.0.0"
+//
+// Left as "dev" for a plain `go build`, which then falls back to the module
+// version recorded by `go install`.
+var version = "dev"
+
+// dbPathOverride backs the persistent --db flag. Empty means "use the default
+// under XRAY_KNIFE_HOME (or ~/.xray-knife)".
+var dbPathOverride string
+
+// resolveVersion prefers the ldflags-stamped value, then the module version
+// baked in by `go install`, so a source build never reports a stale release
+// number it was never built from.
+func resolveVersion() string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	if version != "" {
+		return version
+	}
+	return "dev"
+}
+
 // rootCmd is the top-level cobra command.
 var rootCmd = &cobra.Command{
-	Use:     "xray-knife",
-	Short:   "Swiss Army Knife for xray-core & sing-box",
-	Version: "10.1.1",
+	Use:   "xray-knife",
+	Short: "Swiss Army Knife for xray-core & sing-box",
+	Example: `  # 1. Add a subscription and pull its configs into the local DB.
+  #    Fetched links are also written to configs.txt.
+  xray-knife subs add --url "https://example.com/sub" --remark "My VPN"
+  xray-knife subs fetch --all
+
+  # 2. Test the fetched configs; working ones land in valid.txt, fastest first.
+  xray-knife http -f configs.txt
+
+  # 3. Run a local SOCKS proxy on 127.0.0.1:9999 that rotates through them.
+  xray-knife proxy inbound -f valid.txt`,
 }
 
 // Execute is called by main() to kick everything off.
@@ -46,26 +83,12 @@ func addSubcommandPalettes() {
 
 // Set up the application's configuration and initialize the database.
 func initConfig() {
-	// Find home directory.
-	home, err := os.UserHomeDir()
+	dbPath, err := xkhome.DBPath(dbPathOverride)
 	if err != nil {
-		log.Fatalf("Could not find user home directory: %v", err)
+		customlog.Printf(customlog.Failure, "Could not resolve the database path: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Define the application's config directory path (~/.xray-knife)
-	configDir := filepath.Join(home, ".xray-knife")
-
-	// Create the config directory if it doesn't exist.
-	if _, err := os.Stat(configDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(configDir, 0755); err != nil {
-			log.Fatalf("Could not create config directory at %s: %v", configDir, err)
-		}
-	}
-
-	// Define the database path.
-	dbPath := filepath.Join(configDir, "xray-knife.db")
-
-	// Initialize the database.
 	// This opens the connection and runs migrations.
 	if err := database.InitDB(dbPath); err != nil {
 		customlog.Printf(customlog.Failure, "Failed to initialize database: %v\n", err)
@@ -75,6 +98,18 @@ func initConfig() {
 
 func init() {
 	cobra.OnInitialize(initConfig)
+
+	rootCmd.Version = resolveVersion()
+
+	// -v is verbose in every subcommand; keep the root consistent by putting
+	// --version on -V rather than letting the same letter mean two things.
+	rootCmd.Flags().BoolP("version", "V", false, "version for xray-knife")
+	rootCmd.SetVersionTemplate("{{.Name}} {{.Version}}\n")
+
+	rootCmd.PersistentFlags().StringVar(&dbPathOverride, "db", "",
+		"Path to the xray-knife SQLite database (default: $XRAY_KNIFE_HOME/xray-knife.db, else ~/.xray-knife/xray-knife.db)")
+
+	rootCmd.SetFlagErrorFunc(flagErrorFunc)
 
 	addSubcommandPalettes()
 }

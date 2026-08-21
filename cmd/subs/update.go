@@ -3,8 +3,8 @@ package subs
 import (
 	"fmt"
 
-	"github.com/lilendian0x00/xray-knife/v10/database"
-	"github.com/lilendian0x00/xray-knife/v10/utils/customlog"
+	"github.com/lilendian0x00/xray-knife/v11/database"
+	"github.com/lilendian0x00/xray-knife/v11/utils/customlog"
 	"github.com/spf13/cobra"
 )
 
@@ -73,7 +73,7 @@ func init() {
 	UpdateCmd.Flags().Int64Var(&updateID, "id", 0, "ID of the subscription to update (required)")
 	UpdateCmd.Flags().StringVarP(&updateURL, "url", "u", "", "New URL for the subscription")
 	UpdateCmd.Flags().StringVarP(&updateRemark, "remark", "r", "", "New remark (pass empty string to clear)")
-	UpdateCmd.Flags().StringVarP(&updateUserAgent, "user-agent", "a", "", "New User-Agent (pass empty string to clear)")
+	UpdateCmd.Flags().StringVar(&updateUserAgent, "user-agent", "", "New User-Agent (pass empty string to clear)")
 	UpdateCmd.Flags().StringVar(&updateEnabled, "enabled", "", "Enable or disable the subscription (true/false)")
 	UpdateCmd.MarkFlagRequired("id")
 }

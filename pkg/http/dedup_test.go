@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core"
 )
 
 func b64Vmess(json string) string {

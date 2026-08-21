@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core/protocol"
-	"github.com/lilendian0x00/xray-knife/v10/utils"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
+	"github.com/lilendian0x00/xray-knife/v11/utils"
 )
 
 // resolveFixedChain parses a fixed chain from either pipe-separated links

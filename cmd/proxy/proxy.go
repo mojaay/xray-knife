@@ -36,7 +36,7 @@ those are provided, from the local subscription database (populate with
 	flags.StringVarP(&pf.configFile, "file", "f", "", "Read config links from a file")
 	flags.BoolVarP(&pf.readFromSTDIN, "stdin", "i", false, "Read config link(s) from STDIN")
 	flags.StringVarP(&pf.listenAddr, "addr", "a", "127.0.0.1", "Listen ip address for the proxy server")
-	flags.StringVarP(&pf.listenPort, "port", "p", "9999", "Listen port number for the proxy server")
+	flags.Uint16VarP(&pf.listenPort, "port", "p", 9999, "Listen port number for the proxy server")
 	flags.BoolVarP(&pf.verbose, "verbose", "v", false, "Enable verbose logging for the selected core")
 	flags.BoolVarP(&pf.insecureTLS, "insecure", "e", false, "Allow insecure TLS connections (e.g., self-signed certs)")
 

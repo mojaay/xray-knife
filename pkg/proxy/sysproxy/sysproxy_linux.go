@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/lilendian0x00/xray-knife/v11/utils/xkhome"
 )
 
 type desktopEnv int
@@ -256,12 +258,8 @@ func kdeRead(kreadConfig, key string) string {
 }
 
 func envFilePath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := xkhome.Dir()
 	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".xray-knife")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "proxy.env"), nil

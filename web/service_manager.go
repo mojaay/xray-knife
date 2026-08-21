@@ -4,27 +4,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"time"
 
-	pkghttp "github.com/lilendian0x00/xray-knife/v10/pkg/http"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/proxy"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/scanner"
+	pkghttp "github.com/lilendian0x00/xray-knife/v11/pkg/http"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/proxy"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/scanner"
+
+	"github.com/lilendian0x00/xray-knife/v11/utils/xkhome"
 )
 
 var cfScannerHistoryFile string
 var httpTesterHistoryFile string
 
 func init() {
-	home, err := os.UserHomeDir()
+	dataDir, err := xkhome.Dir()
 	if err != nil {
-		// Fallback to current directory if home dir is unavailable
+		// Fallback to current directory if the state dir is unavailable
 		cfScannerHistoryFile = "results.csv"
 		httpTesterHistoryFile = "http-results.csv"
 		return
 	}
-	dataDir := filepath.Join(home, ".xray-knife")
 	cfScannerHistoryFile = filepath.Join(dataDir, "results.csv")
 	httpTesterHistoryFile = filepath.Join(dataDir, "http-results.csv")
 }

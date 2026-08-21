@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core/protocol"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter/endpoint"
@@ -239,12 +239,12 @@ func (c *Core) MakeHttpClient(ctx context.Context, outbound protocol.Protocol, m
 		return nil, nil, fmt.Errorf("outbound adapter not found for tag: %s. Available: %v", outboundTag, available)
 	}
 
-	dialFunc := func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return outboundAdapter.DialContext(ctx, network, M.ParseSocksaddr(addr))
 	}
 
 	if out.Name() == protocol.WireguardIdentifier {
-		dialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, err
@@ -259,7 +259,7 @@ func (c *Core) MakeHttpClient(ctx context.Context, outbound protocol.Protocol, m
 
 	tr := &http.Transport{
 		DisableKeepAlives: true,
-		DialContext:       dialFunc,
+		DialContext:       withEOFNormalization(dial),
 	}
 
 	return &http.Client{

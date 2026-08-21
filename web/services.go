@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lilendian0x00/xray-knife/v10/database"
-	pkghttp "github.com/lilendian0x00/xray-knife/v10/pkg/http"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/proxy"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/scanner"
-	"github.com/lilendian0x00/xray-knife/v10/utils"
+	"github.com/lilendian0x00/xray-knife/v11/database"
+	pkghttp "github.com/lilendian0x00/xray-knife/v11/pkg/http"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/proxy"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/scanner"
+	"github.com/lilendian0x00/xray-knife/v11/utils"
 )
 
 // Lifecycle states for managed services.

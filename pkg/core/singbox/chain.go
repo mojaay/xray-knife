@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core/protocol"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter/endpoint"
@@ -191,9 +191,9 @@ func (c *Core) MakeChainedHttpClient(ctx context.Context, hops []protocol.Protoc
 
 	tr := &http.Transport{
 		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		DialContext: withEOFNormalization(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return outboundAdapter.DialContext(ctx, network, M.ParseSocksaddr(addr))
-		},
+		}),
 	}
 
 	return &http.Client{

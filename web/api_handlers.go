@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/gocarina/gocsv"
-	pkghttp "github.com/lilendian0x00/xray-knife/v10/pkg/http"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/proxy"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/scanner"
-	"github.com/lilendian0x00/xray-knife/v10/utils"
+	pkghttp "github.com/lilendian0x00/xray-knife/v11/pkg/http"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/proxy"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/scanner"
+	"github.com/lilendian0x00/xray-knife/v11/utils"
 )
 
 // appendResultsToCSV delegates to the shared implementation in pkg/http.

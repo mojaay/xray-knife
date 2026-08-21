@@ -53,7 +53,13 @@ jobs:
       - name: Build the application
         run: |
           mkdir -p build_assets
-          go build -v -o build_assets/xray-knife -tags="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_grpc" -ldflags "-s -w -buildid= ${{ matrix.extra_ldflags }}"
+          # Stamp the version so `xray-knife -V` reports the tag it was built from.
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ -z "$VERSION" ] || [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            VERSION="$(git describe --tags --always 2>/dev/null || echo dev)"
+            VERSION="${VERSION#v}"
+          fi
+          go build -v -o build_assets/xray-knife -tags="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_grpc" -ldflags "-s -w -buildid= -X github.com/lilendian0x00/xray-knife/v11/cmd.version=${VERSION} ${{ matrix.extra_ldflags }}"
 
       - name: Rename Windows binary
         if: matrix.goos == 'windows'

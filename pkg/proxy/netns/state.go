@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/lilendian0x00/xray-knife/v11/utils/xkhome"
 )
 
 // State is persisted to disk so a subsequent launch can clean up
@@ -23,12 +25,8 @@ type State struct {
 }
 
 func stateFilePath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := xkhome.Dir()
 	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".xray-knife")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, ".netns-state.json"), nil

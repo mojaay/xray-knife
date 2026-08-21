@@ -58,7 +58,7 @@ chmod +x xray-knife
 
 如果你装了 Go (1.25), 你也可以通过以下命令一键安装 `xray-knife`:
 ```bash
-go install github.com/lilendian0x00/xray-knife/v9@latest
+go install github.com/lilendian0x00/xray-knife/v11@latest
 ```
 
 ### Arch linux aur
@@ -69,9 +69,30 @@ paru -S xray-knife-bin ||
 pikaur -S xray-knife-bin
 ```
 
+## 🚀 快速开始
+
+三条命令即可从订阅链接得到一个可用的本地代理：
+
+```bash
+# 1. 添加订阅并把配置拉取到本地数据库。
+#    拉取到的链接同时会写入 configs.txt。
+xray-knife subs add --url "https://example.com/sub" --remark "My VPN"
+xray-knife subs fetch --all
+
+# 2. 测试拉取到的配置；可用的会按延迟从快到慢写入 valid.txt。
+xray-knife http -f configs.txt
+
+# 3. 在 127.0.0.1:9999 启动本地 SOCKS 代理，并在这些配置之间轮换。
+xray-knife proxy inbound -f valid.txt
+```
+
 ## 🛠️ 使用
 
 `xray-knife` 遵从严格的命令顺序: `xray-knife [command] [flags]`
+
+短选项在所有命令中含义一致 —— `-c` 始终是配置链接，`-f` 是链接文件，
+`-o` 是输出文件，`-p` 是端口，`-v` 是详细输出。
+从 v10 升级请参阅 [MIGRATION-v11.md](../MIGRATION-v11.md)。
 
 ### 🖥️ 启动 Web UI (`webui`)
 
@@ -158,10 +179,10 @@ xray-knife http list-results --limit 20
 
 ```bash
 # 从文件导入
-xray-knife proxy --inbound socks -f ./configs.txt --port 9999 --rotate 300
+xray-knife proxy inbound -f ./configs.txt --port 9999 --rotate 300
 
-# 从程序自带的 SQLite 数据库中导入
-xray-knife proxy --inbound socks --port 9999 --rotate 300
+# 从程序自带的 SQLite 数据库中导入（不指定 -c/-f/-i 时默认读取数据库）
+xray-knife proxy inbound --inbound socks --port 9999 --rotate 300
 ```
 > **提醒:** 其运行时如果你在 SSH / Console 中 `Enter` 将强制立即切换到当前最快的出口。
 

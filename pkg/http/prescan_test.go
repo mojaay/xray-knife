@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core/protocol"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
 )
 
 func TestIsUDPBased(t *testing.T) {

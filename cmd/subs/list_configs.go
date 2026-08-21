@@ -5,7 +5,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/lilendian0x00/xray-knife/v10/database"
+	"github.com/lilendian0x00/xray-knife/v11/database"
 	"github.com/spf13/cobra"
 )
 
@@ -70,7 +70,11 @@ Examples:
 }
 
 func init() {
-	ListConfigsCmd.Flags().Int64Var(&listConfigsSubID, "id", 0, "Filter by subscription ID")
+	// --sub-id matches the same filter on `http --sub-id`; --id stays as a
+	// deprecated alias.
+	ListConfigsCmd.Flags().Int64Var(&listConfigsSubID, "sub-id", 0, "Filter by subscription ID")
+	ListConfigsCmd.Flags().Int64Var(&listConfigsSubID, "id", 0, "Deprecated alias for --sub-id")
+	_ = ListConfigsCmd.Flags().MarkDeprecated("id", "use --sub-id")
 	ListConfigsCmd.Flags().StringVar(&listConfigsProtocol, "protocol", "", "Filter by protocol (e.g. vless, vmess, trojan)")
-	ListConfigsCmd.Flags().IntVar(&listConfigsLimit, "limit", 50, "Maximum number of configs to display")
+	ListConfigsCmd.Flags().IntVarP(&listConfigsLimit, "limit", "l", 50, "Maximum number of configs to display")
 }

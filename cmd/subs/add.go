@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/lilendian0x00/xray-knife/v10/database"
-	"github.com/lilendian0x00/xray-knife/v10/utils/customlog"
+	"github.com/lilendian0x00/xray-knife/v11/database"
+	"github.com/lilendian0x00/xray-knife/v11/utils/customlog"
 	"github.com/spf13/cobra"
 )
 
@@ -43,6 +43,6 @@ Examples:
 func init() {
 	AddCmd.Flags().StringVarP(&addURL, "url", "u", "", "URL of the subscription")
 	AddCmd.Flags().StringVarP(&addRemark, "remark", "r", "", "A memorable name for the subscription")
-	AddCmd.Flags().StringVarP(&addUserAgent, "user-agent", "a", "", "Custom User-Agent for fetching the subscription")
+	AddCmd.Flags().StringVar(&addUserAgent, "user-agent", "", "Custom User-Agent for fetching the subscription")
 	AddCmd.MarkFlagRequired("url")
 }

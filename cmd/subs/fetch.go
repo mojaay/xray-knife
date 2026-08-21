@@ -47,7 +47,7 @@ func NewFetchCommand() *cobra.Command {
 func (fc *FetchCommand) createCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fetch",
-		Short: "Fetches configs from a subscription and saves them to the DB and optionally a file.",
+		Short: "Fetches configs from a subscription and saves them to the DB and a file.",
 		Long: `Fetches proxy configurations from one or more subscription sources.
 
 Supports multiple input modes:
@@ -58,7 +58,7 @@ Supports multiple input modes:
 
 Use --workers to control concurrency for --file and --all modes (default: 3).
 Fetched configs are parsed, deduplicated, and upserted into the local database.
-Optionally write the fetched configs to a file with --out.
+Fetched configs are also written to a file (default: configs.txt); pass --out "" to disable.
 
 Examples:
   xray-knife subs fetch --id 1
@@ -78,9 +78,11 @@ func (fc *FetchCommand) addFlags(cmd *cobra.Command) {
 	flags := cmd.Flags()
 	flags.Int64Var(&fc.config.SubscriptionID, "id", 0, "The ID of the subscription from the DB")
 	flags.StringVarP(&fc.config.SubscriptionURL, "url", "u", "", "A one-off subscription URL to fetch from")
-	flags.StringVarP(&fc.config.UserAgent, "useragent", "a", "", "Custom User-agent to be used (overrides DB value)")
-	flags.StringVarP(&fc.config.OutputFile, "out", "o", "configs.txt", "Output file for fetched configs (default: configs.txt).")
-	flags.StringVarP(&fc.config.Proxy, "proxy", "p", "", "Proxy to use for fetching the subscription")
+	flags.StringVar(&fc.config.UserAgent, "user-agent", "", "Custom User-agent to be used (overrides DB value)")
+	flags.StringVar(&fc.config.UserAgent, "useragent", "", "Deprecated alias for --user-agent")
+	_ = flags.MarkDeprecated("useragent", "use --user-agent")
+	flags.StringVarP(&fc.config.OutputFile, "out", "o", "configs.txt", "Output file for fetched configs (pass an empty string to disable)")
+	flags.StringVar(&fc.config.Proxy, "proxy", "", "Proxy to use for fetching the subscription")
 	flags.BoolVar(&fc.config.FetchAll, "all", false, "Fetch from all enabled subscriptions in the DB")
 	flags.StringVarP(&fc.config.FileInput, "file", "f", "", "File containing subscription URLs (one per line)")
 	flags.IntVarP(&fc.config.Workers, "workers", "w", 3, "Number of concurrent workers for --file and --all modes")
@@ -215,7 +217,10 @@ func (fc *FetchCommand) fetchAllSubscriptions() error {
 			}
 
 			subID := sql.NullInt64{Int64: sub.ID, Valid: true}
-			dbConfigs := fc.parseLinks(rawLinks, subID)
+			dbConfigs, unparsable := fc.parseLinks(rawLinks, subID)
+			if unparsable > 0 {
+				customlog.Printf(customlog.Warning, "Subscription %d (%s): %d link(s) could not be parsed; saved with unknown protocol.\n", sub.ID, remark, unparsable)
+			}
 
 			if len(dbConfigs) > 0 {
 				if err := database.UpsertSubscriptionConfigs(dbConfigs); err != nil {
@@ -253,6 +258,7 @@ func (fc *FetchCommand) fetchAllSubscriptions() error {
 	if failed > 0 {
 		return fmt.Errorf("%d out of %d subscriptions failed to fetch", failed, len(enabled))
 	}
+	fc.printNextStep(len(allConfigs))
 	return nil
 }
 
@@ -304,7 +310,10 @@ func (fc *FetchCommand) fetchFromFile() error {
 
 			// One-off fetches from file are not linked to a subscription
 			subID := sql.NullInt64{Valid: false}
-			dbConfigs := fc.parseLinks(rawLinks, subID)
+			dbConfigs, unparsable := fc.parseLinks(rawLinks, subID)
+			if unparsable > 0 {
+				customlog.Printf(customlog.Warning, "%s: %d link(s) could not be parsed; saved with unknown protocol.\n", rawURL, unparsable)
+			}
 
 			if len(dbConfigs) > 0 {
 				if err := database.UpsertSubscriptionConfigs(dbConfigs); err != nil {
@@ -339,6 +348,7 @@ func (fc *FetchCommand) fetchFromFile() error {
 	if failed > 0 {
 		return fmt.Errorf("%d out of %d URLs failed to fetch", failed, len(urls))
 	}
+	fc.printNextStep(len(allConfigs))
 	return nil
 }
 
@@ -349,7 +359,10 @@ func (fc *FetchCommand) doFetch(sub *Subscription, subscriptionID sql.NullInt64)
 		return fmt.Errorf("failed to fetch configurations: %w", err)
 	}
 
-	dbConfigs := fc.parseLinks(rawLinks, subscriptionID)
+	dbConfigs, unparsable := fc.parseLinks(rawLinks, subscriptionID)
+	if unparsable > 0 {
+		customlog.Printf(customlog.Warning, "%d link(s) could not be parsed; saved with unknown protocol.\n", unparsable)
+	}
 	if len(dbConfigs) == 0 {
 		customlog.Printf(customlog.Warning, "No valid configs found.\n")
 		return nil
@@ -373,12 +386,18 @@ func (fc *FetchCommand) doFetch(sub *Subscription, subscriptionID sql.NullInt64)
 		customlog.Printf(customlog.Success, "%d configs have been written into %q\n", len(dbConfigs), fc.config.OutputFile)
 	}
 
+	fc.printNextStep(len(dbConfigs))
 	return nil
 }
 
-// parseLinks accepts the subscriptionID to correctly populate the struct
-func (fc *FetchCommand) parseLinks(rawLinks []string, subID sql.NullInt64) []database.SubscriptionConfig {
+// parseLinks accepts the subscriptionID to correctly populate the struct. It
+// returns the parsed configs plus the number of links whose protocol could not
+// be determined — those are still saved, but with an unknown protocol, so the
+// caller reports the count rather than leaving the user to discover it via an
+// empty --protocol filter later.
+func (fc *FetchCommand) parseLinks(rawLinks []string, subID sql.NullInt64) ([]database.SubscriptionConfig, int) {
 	var dbConfigs []database.SubscriptionConfig
+	var unparsable int
 	now := time.Now().UTC()
 
 	for _, link := range rawLinks {
@@ -393,26 +412,48 @@ func (fc *FetchCommand) parseLinks(rawLinks []string, subID sql.NullInt64) []dat
 			LastSeenAt:     database.NullTime{Time: now, Valid: true},
 		}
 
-		// Parse protocol info with panic recovery — malformed links must not crash the program
-		func() {
+		// Parse protocol info with panic recovery — malformed links must not
+		// crash the program, but they do get counted.
+		parsed := func() (ok bool) {
 			defer func() {
 				if r := recover(); r != nil {
-					// Silently skip — the config is still saved with unknown protocol
+					ok = false
 				}
 			}()
 			proto, err := fc.core.CreateProtocol(trimmedLink)
-			if err == nil {
-				if err := proto.Parse(); err == nil {
-					g := proto.ConvertToGeneralConfig()
-					dbConf.Protocol = sql.NullString{String: g.Protocol, Valid: g.Protocol != ""}
-					dbConf.Remark = sql.NullString{String: g.Remark, Valid: g.Remark != ""}
-				}
+			if err != nil {
+				return false
 			}
+			if err := proto.Parse(); err != nil {
+				return false
+			}
+			g := proto.ConvertToGeneralConfig()
+			dbConf.Protocol = sql.NullString{String: g.Protocol, Valid: g.Protocol != ""}
+			dbConf.Remark = sql.NullString{String: g.Remark, Valid: g.Remark != ""}
+			return g.Protocol != ""
 		}()
+
+		if !parsed {
+			unparsable++
+		}
 
 		dbConfigs = append(dbConfigs, dbConf)
 	}
-	return dbConfigs
+	return dbConfigs, unparsable
+}
+
+// printNextStep tells the user what to run against what was just fetched.
+// Fetching is never the goal on its own, and the file it wrote is the input to
+// the next command.
+func (fc *FetchCommand) printNextStep(saved int) {
+	if saved == 0 {
+		return
+	}
+	if fc.config.OutputFile != "" {
+		customlog.Printf(customlog.Info, "Next: xray-knife http -f %s\n", fc.config.OutputFile)
+		return
+	}
+	customlog.Printf(customlog.Info, "Next: xray-knife http --from-db\n")
 }
 
 // saveConfigsToFile saves the parsed (filtered) configurations to a file

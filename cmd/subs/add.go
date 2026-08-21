@@ -43,6 +43,6 @@ Examples:
 func init() {
 	AddCmd.Flags().StringVarP(&addURL, "url", "u", "", "URL of the subscription")
 	AddCmd.Flags().StringVarP(&addRemark, "remark", "r", "", "A memorable name for the subscription")
-	AddCmd.Flags().StringVarP(&addUserAgent, "user-agent", "a", "", "Custom User-Agent for fetching the subscription")
+	AddCmd.Flags().StringVar(&addUserAgent, "user-agent", "", "Custom User-Agent for fetching the subscription")
 	AddCmd.MarkFlagRequired("url")
 }

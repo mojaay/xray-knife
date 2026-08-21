@@ -611,7 +611,9 @@ func addFlags(cmd *cobra.Command, config *Config) {
 	flags.StringVarP(&config.ConfigLinksFile, "file", "f", "", "Read config links from a file")
 
 	// Core flags
-	flags.Uint16VarP(&config.ThreadCount, "thread", "t", 50, "Number of threads")
+	flags.Uint16VarP(&config.ThreadCount, "threads", "t", 50, "Number of threads")
+	flags.Uint16Var(&config.ThreadCount, "thread", 50, "Deprecated alias for --threads")
+	_ = flags.MarkDeprecated("thread", "use --threads")
 	flags.StringVarP(&config.CoreType, "core", "z", "auto", "Core type (auto, singbox, xray)")
 	flags.StringVarP(&config.DestURL, "url", "u", "https://cloudflare.com/cdn-cgi/trace", "The url to test config (single-endpoint mode)")
 	flags.StringVarP(&config.HTTPMethod, "method", "m", "GET", "Http method")
@@ -628,11 +630,11 @@ func addFlags(cmd *cobra.Command, config *Config) {
 	flags.Uint16Var(&config.Retries, "retries", 0, "Number of retries for failed proxy tests")
 
 	// Speedtest flags
-	flags.BoolVarP(&config.Speedtest, "speedtest", "p", false, "Speed test with speed.cloudflare.com")
-	flags.Uint64VarP(&config.SpeedtestAmount, "amount", "a", 10000, "Download and upload amount (KB)")
+	flags.BoolVarP(&config.Speedtest, "speedtest", "S", false, "Speed test with speed.cloudflare.com")
+	flags.Uint64Var(&config.SpeedtestAmount, "amount", 10000, "Download and upload amount (KB)")
 	flags.Uint16Var(&config.SpeedtestTimeout, "speedtest-timeout", 30, "Time budget for each speedtest direction (seconds). Raise it for slow links or a large --amount.")
 
-	flags.BoolVarP(&config.GetIPInfo, "rip", "r", true, "Receive real IP (csv)")
+	flags.BoolVar(&config.GetIPInfo, "rip", true, "Receive real IP (csv)")
 	flags.BoolVarP(&config.Verbose, "verbose", "v", false, "Verbose")
 
 	flags.BoolVar(&config.Ping, "ping", false, "Enable continuous HTTP ping mode for a single config")
@@ -641,7 +643,7 @@ func addFlags(cmd *cobra.Command, config *Config) {
 	flags.StringVar(&config.BindInterface, "bind", "", "Bind outbound dials to a specific OS interface (e.g. eth0). Linux: needs CAP_NET_RAW.")
 
 	// Dedup / prescan / early-exit flags (batch mode only)
-	flags.BoolVar(&config.SemanticDedup, "dedup-semantic", false, "Deduplicate by connection identity (protocol/address/port/credential/transport/TLS) instead of exact link text; drops re-skinned duplicates")
+	flags.BoolVar(&config.SemanticDedup, "dedup-semantic", true, "Deduplicate by connection identity (protocol/address/port/credential/transport/TLS) instead of exact link text; drops re-skinned duplicates. Use --dedup-semantic=false for exact-string dedup only")
 	flags.BoolVar(&config.Prescan, "prescan", false, "TCP pre-check: drop unreachable endpoints before the full test (much faster on large lists)")
 	flags.Uint16Var(&config.PrescanTimeout, "prescan-timeout", 2000, "TCP dial timeout for --prescan (ms)")
 	flags.Uint16Var(&config.PrescanWorkers, "prescan-workers", 512, "Concurrent TCP dials for --prescan")
@@ -656,7 +658,7 @@ func addFlags(cmd *cobra.Command, config *Config) {
 	// Output Flags
 	flags.StringVarP(&config.OutputFile, "out", "o", "valid.txt", "Output file for valid/all config links")
 	flags.StringVarP(&config.OutputType, "type", "x", "txt", "Output type for file (csv, txt)")
-	flags.BoolVarP(&config.SortedByRealDelay, "sort", "s", true, "Sort config links by their delay (fast to slow) in file output")
+	flags.BoolVar(&config.SortedByRealDelay, "sort", true, "Sort config links by their delay (fast to slow) in file output")
 	flags.BoolVar(&config.SaveToDB, "save-db", false, "Save test results to the database")
 
 	cmd.MarkFlagsMutuallyExclusive("file", "config", "from-db")

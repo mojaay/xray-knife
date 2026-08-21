@@ -20,7 +20,12 @@ SOURCE_FILE="main.go"
 
 # Common build configuration
 BUILD_TAGS="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_grpc"
-LDFLAGS="-s -w"
+
+# Stamp the version into the binary so `xray-knife -V` reports what it was
+# actually built from. Override with VERSION=... ./build.sh
+VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+MODULE_PATH="github.com/lilendian0x00/xray-knife/v11"
+LDFLAGS="-s -w -X ${MODULE_PATH}/cmd.version=${VERSION#v}"
 # GOARCH_DEFAULT is set in build_app based on argument or default
 
 # Ensure source file exists

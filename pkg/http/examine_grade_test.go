@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lilendian0x00/xray-knife/v10/pkg/core/protocol"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
 )
 
 // --- Minimal stub core so ExamineConfig's real grading loop can run against a

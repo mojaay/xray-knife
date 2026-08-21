@@ -5,7 +5,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/lilendian0x00/xray-knife/v10/database"
+	"github.com/lilendian0x00/xray-knife/v11/database"
 	"github.com/spf13/cobra"
 )
 

@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	pkghttp "github.com/lilendian0x00/xray-knife/v10/pkg/http"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/proxy"
-	"github.com/lilendian0x00/xray-knife/v10/pkg/scanner"
+	pkghttp "github.com/lilendian0x00/xray-knife/v11/pkg/http"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/proxy"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/scanner"
 )
 
 var cfScannerHistoryFile string

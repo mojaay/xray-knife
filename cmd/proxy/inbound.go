@@ -18,16 +18,16 @@ from --config / --file / --stdin or, if none of those are provided, the
 local subscription database (populated via 'xray-knife subs fetch').`,
 		Example: `  xray-knife proxy inbound                                # use DB pool, default port 9999
   xray-knife proxy inbound -c "vless://..."               # one-shot single config
-  xray-knife proxy inbound -f configs.txt -t 60           # rotate every 60s from file
+  xray-knife proxy inbound -f configs.txt -R 60           # rotate every 60s from file
   xray-knife proxy inbound --chain --chain-hops 3         # 3-hop chain from DB pool`,
 		RunE: runInbound,
 	}
 
 	flags := cmd.Flags()
-	flags.StringVarP(&inboundCmdRot.in.inboundProtocol, "inbound", "j", "socks", "Inbound protocol to use (vless, vmess, socks)")
-	flags.StringVarP(&inboundCmdRot.in.inboundTransport, "transport", "u", "tcp", "Inbound transport to use (tcp, ws, grpc, xhttp)")
-	flags.StringVarP(&inboundCmdRot.in.inboundUUID, "uuid", "g", "random", "Inbound custom UUID to use (default: random)")
-	flags.StringVarP(&inboundCmdRot.in.inboundConfigLink, "inbound-config", "I", "", "Custom config link for the inbound proxy")
+	flags.StringVar(&inboundCmdRot.in.inboundProtocol, "inbound", "socks", "Inbound protocol to use (vless, vmess, socks)")
+	flags.StringVar(&inboundCmdRot.in.inboundTransport, "transport", "tcp", "Inbound transport to use (tcp, ws, grpc, xhttp)")
+	flags.StringVar(&inboundCmdRot.in.inboundUUID, "uuid", "random", "Inbound custom UUID to use (default: random)")
+	flags.StringVar(&inboundCmdRot.in.inboundConfigLink, "inbound-config", "", "Custom config link for the inbound proxy")
 	cmd.MarkFlagsMutuallyExclusive("inbound-config", "inbound")
 
 	addRotationFlags(cmd, &inboundCmdRot.rot)

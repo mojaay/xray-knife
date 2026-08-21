@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -25,7 +26,7 @@ type parentFlags struct {
 	configFile    string
 	readFromSTDIN bool
 	listenAddr    string
-	listenPort    string
+	listenPort    uint16
 	verbose       bool
 	insecureTLS   bool
 }
@@ -102,10 +103,17 @@ var pf parentFlags
 
 func addRotationFlags(cmd *cobra.Command, r *rotationFlags) {
 	flags := cmd.Flags()
-	flags.Uint32VarP(&r.rotationInterval, "rotate", "t", 300, "How often to rotate outbounds (seconds)")
+	flags.Uint32VarP(&r.rotationInterval, "rotate", "R", 300, "How often to rotate outbounds (seconds)")
 	flags.Uint16VarP(&r.maximumAllowedDelay, "mdelay", "d", 3000, "Maximum allowed delay (ms) for testing configs during rotation")
-	flags.Uint16VarP(&r.batchSize, "batch", "b", 0, "Number of configs to test per rotation (0=auto)")
-	flags.Uint16VarP(&r.concurrency, "concurrency", "n", 0, "Number of concurrent test threads (0=auto)")
+	flags.Uint16Var(&r.batchSize, "batch", 0, "Number of configs to test per rotation (0=auto)")
+
+	// --concurrency renamed to --threads for consistency with http and
+	// cfscanner. -t is NOT bound here: it meant --rotate in v10 and both take
+	// a number, so rebinding it would silently change behaviour. It becomes
+	// --threads in v12.
+	flags.Uint16Var(&r.concurrency, "threads", 0, "Number of concurrent test threads (0=auto)")
+	flags.Uint16Var(&r.concurrency, "concurrency", 0, "Deprecated alias for --threads")
+	_ = flags.MarkDeprecated("concurrency", "use --threads")
 	flags.Uint32Var(&r.healthCheckInterval, "health-check", 30, "Health check interval in seconds (0=disabled)")
 	flags.Uint16Var(&r.healthFailThreshold, "health-fail-threshold", 0, "Consecutive health-check failures before striking the active config (0=default)")
 	flags.Uint16Var(&r.drainTimeout, "drain", 0, "Seconds to keep the current outbound serving before switching during rotation (0=switch immediately)")
@@ -209,7 +217,7 @@ func buildPkgConfig(
 		Mode:        mode,
 		CoreType:    p.coreType,
 		ListenAddr:  p.listenAddr,
-		ListenPort:  p.listenPort,
+		ListenPort:  strconv.FormatUint(uint64(p.listenPort), 10),
 		Verbose:     p.verbose,
 		InsecureTLS: p.insecureTLS,
 	}

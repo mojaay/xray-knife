@@ -28,10 +28,10 @@ OS-specific behavior:
 	}
 
 	flags := cmd.Flags()
-	flags.StringVarP(&systemCmdRot.in.inboundProtocol, "inbound", "j", "socks", "Inbound protocol to use (vless, vmess, socks)")
-	flags.StringVarP(&systemCmdRot.in.inboundTransport, "transport", "u", "tcp", "Inbound transport to use (tcp, ws, grpc, xhttp)")
-	flags.StringVarP(&systemCmdRot.in.inboundUUID, "uuid", "g", "random", "Inbound custom UUID to use (default: random)")
-	flags.StringVarP(&systemCmdRot.in.inboundConfigLink, "inbound-config", "I", "", "Custom config link for the inbound proxy")
+	flags.StringVar(&systemCmdRot.in.inboundProtocol, "inbound", "socks", "Inbound protocol to use (vless, vmess, socks)")
+	flags.StringVar(&systemCmdRot.in.inboundTransport, "transport", "tcp", "Inbound transport to use (tcp, ws, grpc, xhttp)")
+	flags.StringVar(&systemCmdRot.in.inboundUUID, "uuid", "random", "Inbound custom UUID to use (default: random)")
+	flags.StringVar(&systemCmdRot.in.inboundConfigLink, "inbound-config", "", "Custom config link for the inbound proxy")
 	cmd.MarkFlagsMutuallyExclusive("inbound-config", "inbound")
 
 	addRotationFlags(cmd, &systemCmdRot.rot)

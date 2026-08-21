@@ -191,9 +191,9 @@ func (c *Core) MakeChainedHttpClient(ctx context.Context, hops []protocol.Protoc
 
 	tr := &http.Transport{
 		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		DialContext: withEOFNormalization(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return outboundAdapter.DialContext(ctx, network, M.ParseSocksaddr(addr))
-		},
+		}),
 	}
 
 	return &http.Client{

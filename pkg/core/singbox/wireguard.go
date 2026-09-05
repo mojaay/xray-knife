@@ -118,6 +118,10 @@ func (w *Wireguard) CraftInboundOptions() *option.Inbound {
 	}
 }
 
+// CraftOutboundOptions builds sing-box WireGuard options. Since sing-box 1.14
+// WireGuard is an endpoint, not an outbound: the returned option.Outbound
+// carries *option.WireGuardEndpointOptions and placeOutbounds files it under
+// Options.Endpoints. The single server in the link becomes the sole peer.
 func (w *Wireguard) CraftOutboundOptions(allowInsecure bool) (*option.Outbound, error) {
 	Address, portS, err := net.SplitHostPort(w.Endpoint)
 	if err != nil {
@@ -142,43 +146,32 @@ func (w *Wireguard) CraftOutboundOptions(allowInsecure bool) (*option.Outbound, 
 		}
 	}
 
-	opts := option.LegacyWireGuardOutboundOptions{
-		DialerOptions: option.DialerOptions{},
-		ServerOptions: option.ServerOptions{
-			Server:     Address,
-			ServerPort: uint16(port),
-		},
-		LocalAddress: badoption.Listable[netip.Prefix]{},
-		//Peers: []option.WireGuardPeer{
-		//	{
-		//		ServerOptions: option.ServerOptions{
-		//			Server:     Address,
-		//			ServerPort: uint16(port),
-		//		},
-		//		PublicKey:    w.PublicKey,
-		//		PreSharedKey: "",                            // Changed from SecretKey to PreSharedKey
-		//		AllowedIPs:   []string{"0.0.0.0/0", "::/0"}, // Added IPv6 support
-		//		Reserved:     reserved,
-		//	},
-		//},
-		PeerPublicKey: w.PublicKey,
-		PrivateKey:    w.SecretKey,
-		//PreSharedKey: w.SecretKey,
-		Reserved: reserved,
-		MTU:      uint32(w.Mtu),
+	peer := option.WireGuardPeer{
+		Address:   Address,
+		Port:      uint16(port),
+		PublicKey: w.PublicKey,
+		Reserved:  reserved,
+	}
+	// The legacy single-peer outbound routed everything through the peer
+	// implicitly; the endpoint form needs the allowed IPs spelled out.
+	peer.AllowedIPs = badoption.Listable[netip.Prefix]{
+		netip.MustParsePrefix("0.0.0.0/0"),
+		netip.MustParsePrefix("::/0"),
 	}
 
-	localAddresses := strings.Split(w.LocalAddress, ",")
-
-	//opts.LocalAddress = make(option.Listable[netip.Prefix], len(localAddresses))
+	opts := option.WireGuardEndpointOptions{
+		MTU:        uint32(w.Mtu),
+		PrivateKey: w.SecretKey,
+		Peers:      []option.WireGuardPeer{peer},
+	}
 
 	// Parsing local addresses
-	for _, v := range localAddresses {
-		prefix, err := netip.ParsePrefix(v)
+	for _, v := range strings.Split(w.LocalAddress, ",") {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(v))
 		if err != nil {
 			return nil, err
 		}
-		opts.LocalAddress = append(opts.LocalAddress, prefix)
+		opts.Address = append(opts.Address, prefix)
 	}
 
 	return &option.Outbound{
@@ -196,8 +189,12 @@ func (w *Wireguard) CraftOutbound(ctx context.Context, l logger.ContextLogger, a
 
 	router := service.FromContext[adapter.Router](ctx)
 
-	wgOptions, _ := options.Options.(option.LegacyWireGuardOutboundOptions)
-	out, err := sing_wireguard.NewOutbound(ctx, router, l, "out_wireguard", wgOptions)
+	wgOptions, ok := options.Options.(*option.WireGuardEndpointOptions)
+	if !ok {
+		return nil, fmt.Errorf("wireguard: unexpected options type %T", options.Options)
+	}
+	// An endpoint is also an adapter.Outbound, so callers can dial through it.
+	out, err := sing_wireguard.NewEndpoint(ctx, router, l, "out_wireguard", *wgOptions)
 	if err != nil {
 		return nil, errors.New(fmt.Sprintf("failed creating wireguard outbound: %v", err))
 	}

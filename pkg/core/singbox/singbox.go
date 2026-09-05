@@ -10,11 +10,15 @@ import (
 	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
 
 	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/adapter/certificate"
 	"github.com/sagernet/sing-box/adapter/endpoint"
 	"github.com/sagernet/sing-box/adapter/inbound"
 	boxOutbound "github.com/sagernet/sing-box/adapter/outbound"
 	boxService "github.com/sagernet/sing-box/adapter/service"
 	"github.com/sagernet/sing-box/dns"
+	dnsTransport "github.com/sagernet/sing-box/dns/transport"
+	"github.com/sagernet/sing-box/dns/transport/hosts"
+	"github.com/sagernet/sing-box/dns/transport/local"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/protocol/hysteria2"
@@ -116,6 +120,50 @@ func (c *Core) applyBind(opts *option.Options) {
 	opts.Route.DefaultInterface = c.BindInterface
 }
 
+// boxContext registers every protocol xray-knife can drive with sing-box and
+// attaches the registries to ctx. WireGuard has been an endpoint rather than
+// an outbound since sing-box 1.14, so it goes into the endpoint registry; the
+// outbound manager still resolves endpoint tags, so detour/Final/Outbound(tag)
+// keep working for it.
+func boxContext(ctx context.Context) context.Context {
+	ctx = service.ContextWithDefaultRegistry(ctx)
+	outboundRegistry := boxOutbound.NewRegistry()
+	hysteria2.RegisterOutbound(outboundRegistry)
+	shadowsocks.RegisterOutbound(outboundRegistry)
+	socks.RegisterOutbound(outboundRegistry)
+	trojan.RegisterOutbound(outboundRegistry)
+	vless.RegisterOutbound(outboundRegistry)
+	vmess.RegisterOutbound(outboundRegistry)
+	endpointRegistry := endpoint.NewRegistry()
+	wireguard.RegisterEndpoint(endpointRegistry)
+	// sing-box 1.14 builds a "local" DNS server as the default fallback and
+	// looks its transport up in this registry, so an empty registry fails
+	// box.New with "transport type not found: local". Register the plain
+	// transports (no build-tag-gated ones such as QUIC or DHCP).
+	dnsRegistry := dns.NewTransportRegistry()
+	dnsTransport.RegisterTCP(dnsRegistry)
+	dnsTransport.RegisterUDP(dnsRegistry)
+	dnsTransport.RegisterTLS(dnsRegistry)
+	dnsTransport.RegisterHTTPS(dnsRegistry)
+	hosts.RegisterTransport(dnsRegistry)
+	local.RegisterTransport(dnsRegistry)
+	return box.Context(ctx, inbound.NewRegistry(), outboundRegistry, endpointRegistry,
+		dnsRegistry, boxService.NewRegistry(), certificate.NewRegistry())
+}
+
+// placeOutbounds files crafted outbounds into the right sing-box list:
+// WireGuard options are endpoint options and must live in Endpoints, everything
+// else in Outbounds. Tags are preserved so callers can keep addressing them.
+func placeOutbounds(opts *option.Options, outbounds ...option.Outbound) {
+	for _, out := range outbounds {
+		if _, isEndpoint := out.Options.(*option.WireGuardEndpointOptions); isEndpoint {
+			opts.Endpoints = append(opts.Endpoints, option.Endpoint{Type: out.Type, Tag: out.Tag, Options: out.Options})
+			continue
+		}
+		opts.Outbounds = append(opts.Outbounds, out)
+	}
+}
+
 type FakeInstance struct {
 }
 
@@ -143,13 +191,11 @@ func (c *Core) MakeInstance(ctx context.Context, outbound protocol.Protocol) (pr
 
 	opts := option.Options{
 		Inbounds: []option.Inbound{},
-		Outbounds: []option.Outbound{
-			*outOpts,
-		},
 		Log: &option.LogOptions{
 			Disabled: true,
 		},
 	}
+	placeOutbounds(&opts, *outOpts)
 
 	if c.Verbose {
 		opts.Log = &option.LogOptions{
@@ -166,7 +212,7 @@ func (c *Core) MakeInstance(ctx context.Context, outbound protocol.Protocol) (pr
 
 	singboxInstance, err := box.New(box.Options{
 		Options: opts,
-		Context: ctx,
+		Context: boxContext(ctx),
 	})
 
 	if err != nil {
@@ -188,13 +234,11 @@ func (c *Core) MakeHttpClient(ctx context.Context, outbound protocol.Protocol, m
 
 	opts := option.Options{
 		Inbounds: []option.Inbound{},
-		Outbounds: []option.Outbound{
-			*outOpts,
-		},
 		Log: &option.LogOptions{
 			Disabled: true,
 		},
 	}
+	placeOutbounds(&opts, *outOpts)
 	if c.Verbose {
 		opts.Log = &option.LogOptions{
 			Disabled: false,
@@ -204,17 +248,7 @@ func (c *Core) MakeHttpClient(ctx context.Context, outbound protocol.Protocol, m
 
 	c.applyBind(&opts)
 
-	ctx = service.ContextWithDefaultRegistry(ctx)
-	outboundRegistry := boxOutbound.NewRegistry()
-	hysteria2.RegisterOutbound(outboundRegistry)
-	shadowsocks.RegisterOutbound(outboundRegistry)
-	socks.RegisterOutbound(outboundRegistry)
-	trojan.RegisterOutbound(outboundRegistry)
-	vless.RegisterOutbound(outboundRegistry)
-	vmess.RegisterOutbound(outboundRegistry)
-	wireguard.RegisterOutbound(outboundRegistry)
-
-	ctx = box.Context(ctx, inbound.NewRegistry(), outboundRegistry, endpoint.NewRegistry(), dns.NewTransportRegistry(), boxService.NewRegistry())
+	ctx = boxContext(ctx)
 
 	instance, err := box.New(box.Options{
 		Options: opts,

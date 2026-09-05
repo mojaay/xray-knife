@@ -10,21 +10,8 @@ import (
 	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
 
 	box "github.com/sagernet/sing-box"
-	"github.com/sagernet/sing-box/adapter/endpoint"
-	"github.com/sagernet/sing-box/adapter/inbound"
-	boxOutbound "github.com/sagernet/sing-box/adapter/outbound"
-	boxService "github.com/sagernet/sing-box/adapter/service"
-	"github.com/sagernet/sing-box/dns"
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing-box/protocol/hysteria2"
-	"github.com/sagernet/sing-box/protocol/shadowsocks"
-	"github.com/sagernet/sing-box/protocol/socks"
-	"github.com/sagernet/sing-box/protocol/trojan"
-	"github.com/sagernet/sing-box/protocol/vless"
-	"github.com/sagernet/sing-box/protocol/vmess"
-	"github.com/sagernet/sing-box/protocol/wireguard"
 	M "github.com/sagernet/sing/common/metadata"
-	"github.com/sagernet/sing/service"
 )
 
 // setDetour sets the Detour field on the outbound's concrete options type.
@@ -41,7 +28,7 @@ func setDetour(outbound *option.Outbound, detourTag string) error {
 		o.Detour = detourTag
 	case *option.Hysteria2OutboundOptions:
 		o.Detour = detourTag
-	case *option.LegacyWireGuardOutboundOptions:
+	case *option.WireGuardEndpointOptions:
 		o.Detour = detourTag
 	case *option.SOCKSOutboundOptions:
 		o.Detour = detourTag
@@ -81,8 +68,7 @@ func (c *Core) MakeChainedInstance(ctx context.Context, hops []protocol.Protocol
 	}
 
 	opts := option.Options{
-		Inbounds:  []option.Inbound{},
-		Outbounds: outbounds,
+		Inbounds: []option.Inbound{},
 		Route: &option.RouteOptions{
 			Final: "chain-0",
 		},
@@ -90,6 +76,7 @@ func (c *Core) MakeChainedInstance(ctx context.Context, hops []protocol.Protocol
 			Disabled: true,
 		},
 	}
+	placeOutbounds(&opts, outbounds...)
 
 	if c.Verbose {
 		opts.Log = &option.LogOptions{
@@ -104,7 +91,7 @@ func (c *Core) MakeChainedInstance(ctx context.Context, hops []protocol.Protocol
 
 	singboxInstance, err := box.New(box.Options{
 		Options: opts,
-		Context: ctx,
+		Context: boxContext(ctx),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("chain: failed to create sing-box instance: %w", err)
@@ -141,8 +128,7 @@ func (c *Core) MakeChainedHttpClient(ctx context.Context, hops []protocol.Protoc
 	}
 
 	opts := option.Options{
-		Inbounds:  []option.Inbound{},
-		Outbounds: outbounds,
+		Inbounds: []option.Inbound{},
 		Route: &option.RouteOptions{
 			Final: "chain-0",
 		},
@@ -150,6 +136,7 @@ func (c *Core) MakeChainedHttpClient(ctx context.Context, hops []protocol.Protoc
 			Disabled: true,
 		},
 	}
+	placeOutbounds(&opts, outbounds...)
 	if c.Verbose {
 		opts.Log = &option.LogOptions{
 			Disabled: false,
@@ -157,17 +144,7 @@ func (c *Core) MakeChainedHttpClient(ctx context.Context, hops []protocol.Protoc
 		}
 	}
 
-	ctx = service.ContextWithDefaultRegistry(ctx)
-	outboundRegistry := boxOutbound.NewRegistry()
-	hysteria2.RegisterOutbound(outboundRegistry)
-	shadowsocks.RegisterOutbound(outboundRegistry)
-	socks.RegisterOutbound(outboundRegistry)
-	trojan.RegisterOutbound(outboundRegistry)
-	vless.RegisterOutbound(outboundRegistry)
-	vmess.RegisterOutbound(outboundRegistry)
-	wireguard.RegisterOutbound(outboundRegistry)
-
-	ctx = box.Context(ctx, inbound.NewRegistry(), outboundRegistry, endpoint.NewRegistry(), dns.NewTransportRegistry(), boxService.NewRegistry())
+	ctx = boxContext(ctx)
 
 	instance, err := box.New(box.Options{
 		Options: opts,

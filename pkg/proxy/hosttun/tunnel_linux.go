@@ -11,6 +11,7 @@ import (
 	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
 
 	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/adapter/certificate"
 	"github.com/sagernet/sing-box/adapter/endpoint"
 	"github.com/sagernet/sing-box/adapter/inbound"
 	boxOutbound "github.com/sagernet/sing-box/adapter/outbound"
@@ -124,7 +125,9 @@ func Start(ctx context.Context, cfg Config) (protocol.Instance, error) {
 		// to 127.0.0.1:PROXY goes through loopback under the right
 		// routing context, never through TUN.
 		DialerOptions: option.DialerOptions{
-			BindInterface: "lo",
+			AbstractDialerOptions: option.AbstractDialerOptions{
+				BindInterface: "lo",
+			},
 		},
 	}
 
@@ -198,7 +201,7 @@ func Start(ctx context.Context, cfg Config) (protocol.Instance, error) {
 	dnsTransportRegistry := dns.NewTransportRegistry()
 	registerDNS(dnsTransportRegistry)
 
-	boxCtx = box.Context(boxCtx, inboundRegistry, outboundRegistry, endpoint.NewRegistry(), dnsTransportRegistry, boxService.NewRegistry())
+	boxCtx = box.Context(boxCtx, inboundRegistry, outboundRegistry, endpoint.NewRegistry(), dnsTransportRegistry, boxService.NewRegistry(), certificate.NewRegistry())
 
 	instance, err := box.New(box.Options{
 		Options: opts,

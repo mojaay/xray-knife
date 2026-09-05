@@ -146,6 +146,15 @@ immediately:
 
 ## Fixed
 
+**`go install` failed to link on Go 1.27** with
+`relocation target golang.org/x/net/http2.(*Transport).connPool not defined`.
+Go 1.27 switches `golang.org/x/net/http2` to a thin wrapper over the standard
+library, which no longer has the unexported method that sing-box 1.13 reached
+through `go:linkname`. sing-box is now 1.14.0, which dropped that hack. The
+sing-box core was adapted to the 1.14 API along the way: WireGuard is an
+endpoint rather than an outbound, and DNS transports are registered
+explicitly. ([#64](https://github.com/lilendian0x00/xray-knife/issues/64))
+
 **All hysteria2 configs failed `http` with a bare `EOF`** since the sing-box
 1.13 stack, even when the tunnel itself worked. sing-quic wraps every
 stream-read error in its own type, including `io.EOF`, and the standard

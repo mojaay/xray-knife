@@ -570,10 +570,15 @@ func handleSingleConfig(examiner *pkghttp.Examiner, config *Config) {
 		customlog.Printf(customlog.Success, "Real Delay: %dms\n\n", res.Delay)
 	}
 	if config.Speedtest {
-		customlog.Printf(customlog.Success, "Downloaded %dKB - Speed: %f mbps\n",
-			config.SpeedtestAmount, res.DownloadSpeed)
-		customlog.Printf(customlog.Success, "Uploaded %dKB - Speed: %f mbps\n",
-			config.SpeedtestAmount, res.UploadSpeed)
+		customlog.Printf(customlog.Success, "Download: %f mbps (requested %dKB)\n",
+			res.DownloadSpeed, config.SpeedtestAmount)
+		customlog.Printf(customlog.Success, "Upload: %f mbps (requested %dKB)\n",
+			res.UploadSpeed, config.SpeedtestAmount)
+	}
+	// A passed config can still carry a speedtest/ip-info problem; surface it
+	// instead of leaving a silent 0.
+	if res.Status == "passed" && res.Reason != "" {
+		customlog.Printf(customlog.Warning, "%s\n", res.Reason)
 	}
 }
 
@@ -631,8 +636,8 @@ func addFlags(cmd *cobra.Command, config *Config) {
 
 	// Speedtest flags
 	flags.BoolVarP(&config.Speedtest, "speedtest", "S", false, "Speed test with speed.cloudflare.com")
-	flags.Uint64Var(&config.SpeedtestAmount, "amount", 10000, "Download and upload amount (KB)")
-	flags.Uint16Var(&config.SpeedtestTimeout, "speedtest-timeout", 30, "Time budget for each speedtest direction (seconds). Raise it for slow links or a large --amount.")
+	flags.Uint64Var(&config.SpeedtestAmount, "amount", 10000, "Download and upload amount (KB). A transfer that outlives --speedtest-timeout is measured on what moved within the window.")
+	flags.Uint16Var(&config.SpeedtestTimeout, "speedtest-timeout", 30, "Measurement window for each speedtest direction (seconds). Slow links report the throughput reached within it instead of 0.")
 
 	flags.BoolVar(&config.GetIPInfo, "rip", true, "Receive real IP (csv)")
 	flags.BoolVarP(&config.Verbose, "verbose", "v", false, "Verbose")

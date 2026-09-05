@@ -121,7 +121,9 @@ func TestRunSpeedtestReportsFailure(t *testing.T) {
 	}
 }
 
-// The per-direction budget must actually bound a stalled transfer.
+// The per-direction budget must bound the transfer, but running out of budget
+// is not a failure: the bytes that did move are measured over the window.
+// Otherwise every link slower than amount/budget reports 0 Mbps (issue #69).
 func TestRunSpeedtestHonorsSpeedtestTimeout(t *testing.T) {
 	srv := speedtestServer(t, 3*time.Second, http.StatusOK, nil)
 	useTestSpeedtestEndpoint(t, srv)
@@ -133,12 +135,104 @@ func TestRunSpeedtestHonorsSpeedtestTimeout(t *testing.T) {
 	e.runSpeedtest(context.Background(), latencyBudgetClient(srv, 5*time.Second), &r)
 	elapsed := time.Since(start)
 
-	if !strings.Contains(r.Reason, "speedtest_download_failed") {
-		t.Errorf("Reason = %q, want a download failure", r.Reason)
+	if r.Reason != "" {
+		t.Errorf("Reason = %q, want none: a transfer cut by the budget is measured, not failed", r.Reason)
+	}
+	if r.DownloadSpeed <= 0 {
+		t.Errorf("DownloadSpeed = %v, want > 0 from the bytes received within the budget", r.DownloadSpeed)
+	}
+	if r.UploadSpeed <= 0 {
+		t.Errorf("UploadSpeed = %v, want > 0 from the bytes sent within the budget", r.UploadSpeed)
 	}
 	// Two directions, ~1s each, versus 3s per direction if unbounded.
 	if elapsed > 4*time.Second {
 		t.Errorf("runSpeedtest took %v, want it bounded near 2s", elapsed)
+	}
+}
+
+// throttledServer streams /__down forever at roughly `chunk` bytes per `tick`
+// and drains /__up at the same pace, so neither direction can finish within a
+// short budget. This is the shape of a slow real-world proxy.
+func throttledServer(t *testing.T, chunk int, tick time.Duration) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/__down":
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			buf := make([]byte, chunk)
+			for r.Context().Err() == nil {
+				if _, err := w.Write(buf); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+				time.Sleep(tick)
+			}
+		case "/__up":
+			buf := make([]byte, chunk)
+			for r.Context().Err() == nil {
+				if _, err := io.ReadFull(r.Body, buf); err != nil {
+					break
+				}
+				time.Sleep(tick)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A link too slow to move --amount within the budget must still get a speed:
+// the throughput achieved inside the window, in both directions.
+func TestRunSpeedtestMeasuresSlowLinkWithinBudget(t *testing.T) {
+	srv := throttledServer(t, 20_000, 50*time.Millisecond) // ~3.2 Mbps
+	useTestSpeedtestEndpoint(t, srv)
+
+	// 50 MB per direction can never complete in a 1s budget.
+	e := &Examiner{DoSpeedtest: true, SpeedtestKbAmount: 50_000, SpeedtestTimeout: 1}
+	r := Result{Status: "passed"}
+
+	start := time.Now()
+	e.runSpeedtest(context.Background(), latencyBudgetClient(srv, 5*time.Second), &r)
+	elapsed := time.Since(start)
+
+	if r.Reason != "" {
+		t.Errorf("Reason = %q, want none", r.Reason)
+	}
+	if r.DownloadSpeed <= 0 {
+		t.Errorf("DownloadSpeed = %v, want > 0", r.DownloadSpeed)
+	}
+	if r.UploadSpeed <= 0 {
+		t.Errorf("UploadSpeed = %v, want > 0", r.UploadSpeed)
+	}
+	if elapsed > 4*time.Second {
+		t.Errorf("runSpeedtest took %v, want it bounded near 2s", elapsed)
+	}
+}
+
+// A download that never delivers a byte inside the budget is a real failure and
+// must still be reported as one, not as a made-up speed.
+func TestRunSpeedtestStalledDownloadStillFails(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // headers only, then stall until the client gives up
+	}))
+	t.Cleanup(srv.Close)
+	useTestSpeedtestEndpoint(t, srv)
+
+	e := &Examiner{DoSpeedtest: true, SpeedtestKbAmount: 10, SpeedtestTimeout: 1}
+	r := Result{Status: "passed"}
+	e.runSpeedtest(context.Background(), latencyBudgetClient(srv, 5*time.Second), &r)
+
+	if !strings.Contains(r.Reason, "speedtest_download_failed") {
+		t.Errorf("Reason = %q, want a download failure for a stalled transfer", r.Reason)
+	}
+	if r.DownloadSpeed != 0 {
+		t.Errorf("DownloadSpeed = %v, want 0 when nothing arrived", r.DownloadSpeed)
 	}
 }
 

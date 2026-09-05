@@ -155,6 +155,14 @@ sing-box core was adapted to the 1.14 API along the way: WireGuard is an
 endpoint rather than an outbound, and DNS transports are registered
 explicitly. ([#64](https://github.com/lilendian0x00/xray-knife/issues/64))
 
+**`http --speedtest` reported 0 Mbps on slow links.** The speed test moved
+`--amount` (10 MB by default) per direction and treated the 30 s
+`--speedtest-timeout` as pass/fail, so any link under ~2.7 Mbps failed both
+directions and wrote `0` to the CSV. The timeout is now a measurement window:
+whatever moved inside it is measured, and only a transfer that moved nothing is
+reported as a failure. Single-config mode also prints the failure reason
+instead of a silent 0. ([#69](https://github.com/lilendian0x00/xray-knife/issues/69))
+
 **All hysteria2 configs failed `http` with a bare `EOF`** since the sing-box
 1.13 stack, even when the tunnel itself worked. sing-quic wraps every
 stream-read error in its own type, including `io.EOF`, and the standard

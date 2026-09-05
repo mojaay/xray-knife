@@ -690,7 +690,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// speedtestTimeout is the per-direction budget for a speed test.
+// speedtestTimeout is the per-direction measurement window for a speed test.
 func (e *Examiner) speedtestTimeout() time.Duration {
 	if e.SpeedtestTimeout == 0 {
 		return defaultSpeedtestTimeout
@@ -722,8 +722,18 @@ func (e *Examiner) runSpeedtest(ctx context.Context, client *http.Client, r *Res
 	}
 }
 
-// measureDownload pulls amount bytes from the speed test endpoint and returns
-// the throughput in Mbps.
+// budgetExpired reports whether reqCtx ended because the speed test's own
+// per-direction window ran out, as opposed to the caller cancelling the run.
+func budgetExpired(reqCtx, parent context.Context) bool {
+	return errors.Is(reqCtx.Err(), context.DeadlineExceeded) && parent.Err() == nil
+}
+
+// measureDownload pulls up to amount bytes from the speed test endpoint and
+// returns the throughput in Mbps. The timeout is a measurement window, not a
+// pass/fail bar: when it runs out mid-transfer the bytes that did arrive are
+// measured over the time they took, so a link slower than amount/timeout
+// reports its real speed instead of 0 (issue #69). A transfer that moved
+// nothing at all is still a failure.
 func measureDownload(ctx context.Context, client *http.Client, timeout time.Duration, amount uint64) (float32, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -740,20 +750,24 @@ func measureDownload(ctx context.Context, client *http.Client, timeout time.Dura
 		return 0, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("unexpected status %s", resp.Status)
+	}
 
 	read, copyErr := io.Copy(io.Discard, resp.Body)
 	elapsed := time.Since(firstByte)
-	if copyErr != nil {
+	if copyErr != nil && !(read > 0 && budgetExpired(reqCtx, ctx)) {
 		return 0, fmt.Errorf("read body after %d bytes: %w", read, copyErr)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("unexpected status %s", resp.Status)
 	}
 	return mbps(read, elapsed)
 }
 
-// measureUpload pushes amount bytes to the speed test endpoint and returns the
-// throughput in Mbps.
+// measureUpload pushes up to amount bytes to the speed test endpoint and
+// returns the throughput in Mbps. As with measureDownload, running out of the
+// window mid-body is not a failure: the bytes handed to the transport so far
+// are measured over the window. That count leads what the server has actually
+// received by the in-flight socket buffers, which is a small overshoot on a
+// multi-second window.
 func measureUpload(ctx context.Context, client *http.Client, timeout time.Duration, amount uint64) (float32, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -778,6 +792,9 @@ func measureUpload(ctx context.Context, client *http.Client, timeout time.Durati
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if sent := counter.n.Load(); sent > 0 && budgetExpired(reqCtx, ctx) {
+			return mbps(sent, time.Since(bodyStart))
+		}
 		return 0, err
 	}
 	defer resp.Body.Close()

@@ -23,6 +23,11 @@ jobs:
             # private net.zoneCache on android; the Go 1.23+ linker rejects this
             # ("invalid reference to net.zoneCache"). Relax the check for android.
             extra_ldflags: "-checklinkname=0"
+          # 32-bit ARM hard-float (v7): routers, Pi 2/3 on a 32-bit OS.
+          # GOARCH=arm needs GOARM to say which ARM version it targets.
+          - goos: linux
+            goarch: arm
+            goarm: 7
       fail-fast: false
 
     runs-on: ubuntu-latest

@@ -8,7 +8,8 @@
 #   - linux
 #   - all (builds for all platforms concurrently)
 #
-# Optional second argument for architecture: <arch> (amd64, arm64). Defaults to amd64.
+# Optional second argument for architecture: <arch> (amd64, arm64, armv7).
+# Defaults to amd64. armv7 is Linux-only.
 
 # Enable strict error handling
 set -euo pipefail
@@ -43,9 +44,12 @@ build_app() {
     local output_name=$2
     local target_goos=$3
     local target_goarch=$4
+    # GOARM only means anything for GOARCH=arm; Go ignores it elsewhere, so an
+    # empty value is safe for every other target.
+    local target_goarm=${5:-}
 
-    echo "Starting build for $platform ($target_goos/$target_goarch)..."
-    GOOS=$target_goos GOARCH=$target_goarch go build \
+    echo "Starting build for $platform ($target_goos/$target_goarch${target_goarm:+v$target_goarm})..."
+    GOOS=$target_goos GOARCH=$target_goarch GOARM=$target_goarm go build \
         -tags="$BUILD_TAGS" \
         -ldflags="$LDFLAGS" \
         -trimpath \
@@ -57,16 +61,37 @@ build_app() {
 # Ensure a platform argument is provided
 if [ $# -lt 1 ]; then
     echo "Error: Missing platform argument."
-    echo "Usage: $0 <platform> [amd64|arm64]"
+    echo "Usage: $0 <platform> [amd64|arm64|armv7]"
     exit 1
 fi
 
 # Determine architecture: use $2 if provided, otherwise default to amd64
 arch_arg=${2:-"amd64"}
 
-if [[ "$arch_arg" != "amd64" && "$arch_arg" != "arm64" ]]; then
-    echo "Error: Invalid architecture '$arch_arg'. Supported: amd64, arm64."
-    echo "Usage: $0 <platform> [amd64|arm64]"
+# Map the architecture label to a GOARCH/GOARM pair. GOARCH=arm on its own is
+# ambiguous — v5, v6 and v7 differ only by GOARM — so the label carries the
+# version and names the output accordingly. armv7 is hard-float (VFPv3), which
+# is what plain GOARM=7 means.
+case "$arch_arg" in
+    "amd64"|"arm64")
+        goarch="$arch_arg"
+        goarm=""
+        ;;
+    "armv7")
+        goarch="arm"
+        goarm="7"
+        ;;
+    *)
+        echo "Error: Invalid architecture '$arch_arg'. Supported: amd64, arm64, armv7."
+        echo "Usage: $0 <platform> [amd64|arm64|armv7]"
+        exit 1
+        ;;
+esac
+
+# 32-bit ARM is Linux-only here: Go has no darwin/arm target at all, and
+# windows/arm is outside the release matrix.
+if [ "$arch_arg" = "armv7" ] && [ "$1" != "linux" ] && [ "$1" != "all" ]; then
+    echo "Error: armv7 is only supported on linux (got '$1')."
     exit 1
 fi
 
@@ -74,13 +99,13 @@ fi
 # Process command-line argument
 case "$1" in
     "macos"|"darwin")
-        build_app "macOS" "${APP_NAME}_darwin_${arch_arg}" "darwin" "$arch_arg"
+        build_app "macOS" "${APP_NAME}_darwin_${arch_arg}" "darwin" "$goarch" "$goarm"
         ;;
     "win"|"windows")
-        build_app "Windows" "${APP_NAME}_windows_${arch_arg}.exe" "windows" "$arch_arg"
+        build_app "Windows" "${APP_NAME}_windows_${arch_arg}.exe" "windows" "$goarch" "$goarm"
         ;;
     "linux")
-        build_app "Linux" "${APP_NAME}_linux_${arch_arg}" "linux" "$arch_arg"
+        build_app "Linux" "${APP_NAME}_linux_${arch_arg}" "linux" "$goarch" "$goarm"
         ;;
     "all")
         echo "Building for all supported OS/architecture combinations concurrently..."
@@ -94,6 +119,7 @@ case "$1" in
         build_app "Windows (arm64)" "${APP_NAME}_windows_arm64.exe" "windows" "arm64" & pids+=($!)
         build_app "Linux (amd64)" "${APP_NAME}_linux_amd64" "linux" "amd64" & pids+=($!)
         build_app "Linux (arm64)" "${APP_NAME}_linux_arm64" "linux" "arm64" & pids+=($!)
+        build_app "Linux (armv7)" "${APP_NAME}_linux_armv7" "linux" "arm" "7" & pids+=($!)
 
         # Wait for all builds and capture exit statuses
         exit_status=0
@@ -110,13 +136,13 @@ case "$1" in
         ;;
     *)
         echo "Error: Invalid or missing platform argument."
-        echo "Usage: $0 <platform> [amd64|arm64]"
+        echo "Usage: $0 <platform> [amd64|arm64|armv7]"
         echo "Available platforms (OS):"
         echo "  - macos (or darwin)"
         echo "  - win (or windows)"
         echo "  - linux"
         echo "  - all (builds for all OS/arch combinations concurrently)"
-        echo "Available architectures: amd64, arm64 (defaults to amd64 if not specified)"
+        echo "Available architectures: amd64, arm64, armv7 (defaults to amd64; armv7 is Linux-only)"
         exit 1
         ;;
 esac

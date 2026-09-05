@@ -143,6 +143,12 @@ immediately:
 - **`xray-knife --help`** now opens with a three-step quickstart.
 - **`xray-knife -V`** reports the version the binary was actually built from,
   stamped at build time rather than hardcoded.
+- **Certificate pinning in share links.** The `pcs` query parameter
+  (`pinnedPeerCertSha256` in xray-core) is parsed for vless and trojan links
+  and the `pcs` key for vmess JSON, passed to xray-core's TLS settings, kept
+  when a link is regenerated, and shown in `parse` output. Comma-separated
+  hex, with or without OpenSSL colons, exactly as xray-core accepts it.
+  ([#65](https://github.com/lilendian0x00/xray-knife/issues/65))
 
 ## Fixed
 

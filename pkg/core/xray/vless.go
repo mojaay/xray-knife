@@ -57,40 +57,40 @@ func (v *Vless) Parse() error {
 
 	// Validate host and sni parameters before assigning them
 
-    isValidHostName := func(s string) bool {
-        if s == "" {
-            return true
-        }
-        for _, r := range s {
-            if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-') {
-                return false
-            }
-        }
-        return true
-    }
+	isValidHostName := func(s string) bool {
+		if s == "" {
+			return true
+		}
+		for _, r := range s {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-') {
+				return false
+			}
+		}
+		return true
+	}
 
-    sni := strings.TrimSpace(query.Get("sni"))
-    if !isValidHostName(sni) {
-        return fmt.Errorf("sni contains invalid characters (only letters, digits, dot, hyphen allowed): %s", sni)
-    }
-    if strings.Contains(sni, " ") {
-        return fmt.Errorf("sni contains space: %s", sni)
-    }
-    if !utils.IsValidHostOrSNI(sni) {
-        return fmt.Errorf("invalid characters in 'sni' parameter: %s", sni)
-    }
+	sni := strings.TrimSpace(query.Get("sni"))
+	if !isValidHostName(sni) {
+		return fmt.Errorf("sni contains invalid characters (only letters, digits, dot, hyphen allowed): %s", sni)
+	}
+	if strings.Contains(sni, " ") {
+		return fmt.Errorf("sni contains space: %s", sni)
+	}
+	if !utils.IsValidHostOrSNI(sni) {
+		return fmt.Errorf("invalid characters in 'sni' parameter: %s", sni)
+	}
 
-    host := strings.TrimSpace(query.Get("host"))
-    if !isValidHostName(host) {
-        return fmt.Errorf("host contains invalid characters (only letters, digits, dot, hyphen allowed): %s", host)
-    }
-    if strings.Contains(host, " ") {
-        return fmt.Errorf("host contains space: %s", host)
-    }
-    if !utils.IsValidHostOrSNI(host) {
-        return fmt.Errorf("invalid characters in 'host' parameter: %s", host)
-    }
-	
+	host := strings.TrimSpace(query.Get("host"))
+	if !isValidHostName(host) {
+		return fmt.Errorf("host contains invalid characters (only letters, digits, dot, hyphen allowed): %s", host)
+	}
+	if strings.Contains(host, " ") {
+		return fmt.Errorf("host contains space: %s", host)
+	}
+	if !utils.IsValidHostOrSNI(host) {
+		return fmt.Errorf("invalid characters in 'host' parameter: %s", host)
+	}
+
 	v.SNI = sni
 	v.Host = host                // for ws, http
 	v.Path = query.Get("path")   // for ws, http path, or kcp seed
@@ -107,6 +107,7 @@ func (v *Vless) Parse() error {
 	v.QuicSecurity = query.Get("quicSecurity")   // QUIC security: "none", "aes-128-gcm", etc.
 	v.Key = query.Get("key")                     // QUIC key
 	v.Authority = query.Get("authority")         // GRPC authority
+	v.PinnedPeerCertSha256 = query.Get("pcs")    // TLS cert SHA-256 pin(s)
 
 	unescapedRemark, err := url.PathUnescape(uri.Fragment)
 	if err != nil {
@@ -200,15 +201,19 @@ func (v *Vless) DetailsStr() string {
 			info += fmt.Sprintf("%s: %v\n",
 				color.RedString("Insecure"), v.AllowInsecure)
 		}
+		if v.PinnedPeerCertSha256 != "" {
+			info += fmt.Sprintf("%s: %s\n",
+				color.RedString("Pinned cert"), v.PinnedPeerCertSha256)
+		}
 	} else {
 		info += fmt.Sprintf("%s: none\n", color.RedString("TLS"))
 	}
 
-  if copyV.Encryption != "" {
+	if copyV.Encryption != "" {
 		info += fmt.Sprintf("%s: %s\n", color.RedString("Encryption"), copyV.Encryption)
-  } else {
+	} else {
 		info += fmt.Sprintf("%s: none\n", color.RedString("Encryption"))
-  }
+	}
 
 	return info
 }
@@ -251,6 +256,7 @@ func (v *Vless) GetLink() string {
 		addQueryParam("quicSecurity", v.QuicSecurity)
 		addQueryParam("key", v.Key)
 		addQueryParam("authority", v.Authority)
+		addQueryParam("pcs", v.PinnedPeerCertSha256)
 
 		baseURL.RawQuery = params.Encode()
 
@@ -425,6 +431,10 @@ func (v *Vless) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDet
 		if insecureFlag && s.TLSSettings.ServerName != "" {
 			s.TLSSettings.VerifyPeerCertByName = s.TLSSettings.ServerName
 		}
+		// Certificate pinning (share-link "pcs"). xray-core splits the list on
+		// commas and accepts hex with or without OpenSSL colons; a pinned cert
+		// is accepted even when it fails CA validation.
+		s.TLSSettings.PinnedPeerCertSha256 = v.PinnedPeerCertSha256
 		if v.ALPN != "" {
 			alpns := conf.StringList(strings.Split(v.ALPN, ","))
 			s.TLSSettings.ALPN = &alpns

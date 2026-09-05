@@ -230,6 +230,10 @@ func (v *Vmess) DetailsStr() string {
 			info += fmt.Sprintf("%s: %v\n",
 				color.RedString("Insecure"), v.AllowInsecure)
 		}
+		if v.PinnedPeerCertSha256 != "" {
+			info += fmt.Sprintf("%s: %s\n",
+				color.RedString("Pinned cert"), v.PinnedPeerCertSha256)
+		}
 	}
 	return info
 }
@@ -389,6 +393,10 @@ func (v *Vmess) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDet
 		if insecureFlag && s.TLSSettings.ServerName != "" {
 			s.TLSSettings.VerifyPeerCertByName = s.TLSSettings.ServerName
 		}
+		// Certificate pinning (share-link "pcs"). xray-core splits the list on
+		// commas and accepts hex with or without OpenSSL colons; a pinned cert
+		// is accepted even when it fails CA validation.
+		s.TLSSettings.PinnedPeerCertSha256 = v.PinnedPeerCertSha256
 		if v.ALPN != "" {
 			alpns := conf.StringList(strings.Split(v.ALPN, ","))
 			s.TLSSettings.ALPN = &alpns

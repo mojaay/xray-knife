@@ -77,6 +77,7 @@ func (t *Trojan) Parse() error {
 	t.QuicSecurity = query.Get("quicSecurity")
 	t.Key = query.Get("key")
 	t.Authority = query.Get("authority")
+	t.PinnedPeerCertSha256 = query.Get("pcs") // TLS cert SHA-256 pin(s)
 
 	unescapedRemark, err := url.PathUnescape(uri.Fragment)
 	if err != nil {
@@ -169,6 +170,10 @@ func (t *Trojan) DetailsStr() string {
 			info += fmt.Sprintf("%s: %v\n",
 				color.RedString("Insecure"), t.AllowInsecure)
 		}
+		if t.PinnedPeerCertSha256 != "" {
+			info += fmt.Sprintf("%s: %s\n",
+				color.RedString("Pinned cert"), t.PinnedPeerCertSha256)
+		}
 	} else {
 		info += fmt.Sprintf("%s: none\n", color.RedString("TLS"))
 	}
@@ -211,6 +216,7 @@ func (t *Trojan) GetLink() string {
 		addQueryParam("quicSecurity", t.QuicSecurity)
 		addQueryParam("key", t.Key)
 		addQueryParam("authority", t.Authority)
+		addQueryParam("pcs", t.PinnedPeerCertSha256)
 
 		baseURL.RawQuery = params.Encode()
 
@@ -370,6 +376,10 @@ func (t *Trojan) BuildOutboundDetourConfig(allowInsecure bool) (*conf.OutboundDe
 		if insecure && s.TLSSettings.ServerName != "" {
 			s.TLSSettings.VerifyPeerCertByName = s.TLSSettings.ServerName
 		}
+		// Certificate pinning (share-link "pcs"). xray-core splits the list on
+		// commas and accepts hex with or without OpenSSL colons; a pinned cert
+		// is accepted even when it fails CA validation.
+		s.TLSSettings.PinnedPeerCertSha256 = t.PinnedPeerCertSha256
 		if t.ALPN != "" {
 			alpns := conf.StringList(strings.Split(t.ALPN, ","))
 			s.TLSSettings.ALPN = &alpns

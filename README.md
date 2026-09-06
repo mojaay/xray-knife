@@ -88,6 +88,9 @@ xray-knife http -f configs.txt
 xray-knife proxy inbound -f valid.txt
 ```
 
+Subscription fetching defaults to 100,000 links and 64 MiB per source. Raise
+these with `subs fetch --max-links`, `--max-bytes`, and `--fetch-timeout`.
+
 ## 🛠️ Usage
 
 `xray-knife` is a command-line tool with a clear and consistent command structure:

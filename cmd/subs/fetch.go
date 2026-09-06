@@ -1,8 +1,10 @@
 package subs
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +13,7 @@ import (
 	"github.com/alitto/pond/v2"
 	"github.com/lilendian0x00/xray-knife/v11/database"
 	"github.com/lilendian0x00/xray-knife/v11/pkg/core"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/subscription"
 	"github.com/lilendian0x00/xray-knife/v11/utils"
 	"github.com/lilendian0x00/xray-knife/v11/utils/customlog"
 
@@ -27,6 +30,9 @@ type FetchConfig struct {
 	FetchAll        bool
 	FileInput       string
 	Workers         int
+	MaxBytes        int64
+	MaxLinks        int
+	Timeout         time.Duration
 }
 
 // FetchCommand holds state for the fetch subcommand.
@@ -87,12 +93,19 @@ func (fc *FetchCommand) addFlags(cmd *cobra.Command) {
 	flags.StringVarP(&fc.config.FileInput, "file", "f", "", "File containing subscription URLs (one per line)")
 	flags.IntVarP(&fc.config.Workers, "workers", "w", 3, "Number of concurrent workers for --file and --all modes")
 
+	flags.Int64Var(&fc.config.MaxBytes, "max-bytes", subscription.DefaultMaxBytes, "Maximum response bytes per subscription")
+	flags.IntVar(&fc.config.MaxLinks, "max-links", subscription.DefaultMaxLinks, "Maximum links per subscription")
+	flags.DurationVar(&fc.config.Timeout, "fetch-timeout", subscription.DefaultTimeout, "Overall timeout for each subscription fetch")
+
 	cmd.MarkFlagsMutuallyExclusive("id", "url", "all", "file")
 }
 
 func (fc *FetchCommand) validateFlags(cmd *cobra.Command, args []string) error {
 	if fc.config.SubscriptionID == 0 && fc.config.SubscriptionURL == "" && !fc.config.FetchAll && fc.config.FileInput == "" {
 		return fmt.Errorf("one of --id, --url, --all, or --file must be provided")
+	}
+	if fc.config.MaxBytes <= 0 || fc.config.MaxBytes == math.MaxInt64 || fc.config.MaxLinks <= 0 || fc.config.Timeout <= 0 {
+		return fmt.Errorf("--max-bytes, --max-links, and --fetch-timeout must be positive and within supported limits")
 	}
 	if fc.config.Workers < 1 {
 		return fmt.Errorf("--workers must be at least 1, got %d", fc.config.Workers)
@@ -106,16 +119,16 @@ func (fc *FetchCommand) validateFlags(cmd *cobra.Command, args []string) error {
 // runCommand executes the fetch command logic
 func (fc *FetchCommand) runCommand(cmd *cobra.Command, args []string) error {
 	if fc.config.FetchAll {
-		return fc.fetchAllSubscriptions()
+		return fc.fetchAllSubscriptions(cmd.Context())
 	}
 	if fc.config.FileInput != "" {
-		return fc.fetchFromFile()
+		return fc.fetchFromFile(cmd.Context())
 	}
-	return fc.fetchSingle()
+	return fc.fetchSingle(cmd.Context())
 }
 
 // fetchSingle handles --id and --url modes (no concurrency needed)
-func (fc *FetchCommand) fetchSingle() error {
+func (fc *FetchCommand) fetchSingle(ctx context.Context) error {
 	var subToFetch Subscription
 	var subscriptionID sql.NullInt64
 
@@ -132,7 +145,6 @@ func (fc *FetchCommand) fetchSingle() error {
 		subToFetch.Url = fc.config.SubscriptionURL
 		subscriptionID.Valid = false // One-off fetch, not linked to a subscription
 		customlog.Printf(customlog.Processing, "Fetching from URL: %s\n", subToFetch.Url)
-		customlog.Printf(customlog.Warning, "One-off fetch: configs will not be linked to any subscription.\n")
 	}
 
 	if fc.config.UserAgent != "" {
@@ -140,7 +152,7 @@ func (fc *FetchCommand) fetchSingle() error {
 	}
 	subToFetch.Proxy = fc.config.Proxy
 
-	return fc.doFetch(&subToFetch, subscriptionID)
+	return fc.doFetch(ctx, &subToFetch, subscriptionID)
 }
 
 // fetchResult stores per-URL results for concurrent fetching
@@ -152,7 +164,7 @@ type fetchResult struct {
 }
 
 // fetchAllSubscriptions handles --all mode with concurrency
-func (fc *FetchCommand) fetchAllSubscriptions() error {
+func (fc *FetchCommand) fetchAllSubscriptions(ctx context.Context) error {
 	subs, err := database.ListSubscriptions()
 	if err != nil {
 		return err
@@ -209,7 +221,7 @@ func (fc *FetchCommand) fetchAllSubscriptions() error {
 				subToFetch.UserAgent = fc.config.UserAgent
 			}
 
-			rawLinks, fetchErr := subToFetch.FetchAll()
+			rawLinks, fetchErr := fc.fetchSource(ctx, &subToFetch)
 			if fetchErr != nil {
 				customlog.Printf(customlog.Failure, "Failed to fetch subscription %d (%s): %v\n", sub.ID, remark, fetchErr)
 				atomic.AddInt32(&failedCount, 1)
@@ -263,7 +275,7 @@ func (fc *FetchCommand) fetchAllSubscriptions() error {
 }
 
 // fetchFromFile handles --file mode with concurrency via pond
-func (fc *FetchCommand) fetchFromFile() error {
+func (fc *FetchCommand) fetchFromFile(ctx context.Context) error {
 	urls := utils.ParseFileByNewline(fc.config.FileInput)
 	if len(urls) == 0 {
 		return fmt.Errorf("no URLs found in file %q", fc.config.FileInput)
@@ -301,7 +313,7 @@ func (fc *FetchCommand) fetchFromFile() error {
 				subToFetch.UserAgent = fc.config.UserAgent
 			}
 
-			rawLinks, fetchErr := subToFetch.FetchAll()
+			rawLinks, fetchErr := fc.fetchSource(ctx, &subToFetch)
 			if fetchErr != nil {
 				customlog.Printf(customlog.Failure, "Failed to fetch %s: %v\n", rawURL, fetchErr)
 				atomic.AddInt32(&failedCount, 1)
@@ -353,8 +365,8 @@ func (fc *FetchCommand) fetchFromFile() error {
 }
 
 // doFetch is the shared logic for single-URL fetch (used by fetchSingle)
-func (fc *FetchCommand) doFetch(sub *Subscription, subscriptionID sql.NullInt64) error {
-	rawLinks, err := sub.FetchAll()
+func (fc *FetchCommand) doFetch(ctx context.Context, sub *Subscription, subscriptionID sql.NullInt64) error {
+	rawLinks, err := fc.fetchSource(ctx, sub)
 	if err != nil {
 		return fmt.Errorf("failed to fetch configurations: %w", err)
 	}
@@ -464,4 +476,11 @@ func (fc *FetchCommand) saveConfigsToFile(configs []database.SubscriptionConfig)
 	}
 	content := strings.Join(links, "\n") + "\n"
 	return utils.WriteIntoFile(fc.config.OutputFile, []byte(content))
+}
+
+func (fc *FetchCommand) fetchSource(ctx context.Context, sub *Subscription) ([]string, error) {
+	sub.MaxBytes = fc.config.MaxBytes
+	sub.MaxLinks = fc.config.MaxLinks
+	sub.Timeout = fc.config.Timeout
+	return sub.FetchAllContext(ctx)
 }

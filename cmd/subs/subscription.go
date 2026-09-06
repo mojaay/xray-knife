@@ -1,19 +1,15 @@
 package subs
 
 import (
-	"fmt"
-	"io"
+	"context"
 	"log"
-	"net/url"
-	"strings"
-
-	"github.com/lilendian0x00/xray-knife/v11/utils"
-	"github.com/lilendian0x00/xray-knife/v11/utils/customlog"
+	"net/http"
+	"time"
 
 	"github.com/imroc/req/v3"
+	"github.com/lilendian0x00/xray-knife/v11/pkg/subscription"
 )
 
-// TODO: Make a database to store subscriptions
 type Subscription struct {
 	Remark      string
 	Url         string
@@ -21,64 +17,43 @@ type Subscription struct {
 	Method      string
 	ConfigLinks []string
 	Proxy       string
+	MaxBytes    int64
+	MaxLinks    int
+	Timeout     time.Duration
 }
 
+// FetchAll retains the CLI API. Library callers should use subscription.Fetch
+// to inject their own context, HTTP client, limits, and request policy.
 func (s *Subscription) FetchAll() ([]string, error) {
-	u, err := url.Parse(s.Url)
-	if err != nil {
-		return nil, fmt.Errorf("invalid subscription URL %q: %w", s.Url, err)
-	}
+	return s.FetchAllContext(context.Background())
+}
+
+func (s *Subscription) FetchAllContext(ctx context.Context) ([]string, error) {
 	if s.Method == "" {
-		s.Method = "GET"
+		s.Method = http.MethodGet
 	}
-
-	client := req.C().ImpersonateChrome()
-
-	r := client.R()
-	if s.UserAgent != "" {
-		r.SetHeader("User-Agent", s.UserAgent)
-	}
-
+	client := req.C().ImpersonateChrome().DisableAutoReadResponse()
+	defer client.GetClient().CloseIdleConnections()
 	if s.Proxy != "" {
 		client.SetProxyURL(s.Proxy)
 	}
-
-	response, err := r.Send(s.Method, u.String())
+	headers := client.Headers.Clone()
+	if s.UserAgent != "" {
+		headers.Set("User-Agent", s.UserAgent)
+	}
+	result, err := subscription.Fetch(ctx, client.GetClient(), s.Url, subscription.FetchOptions{
+		DecodeOptions: subscription.DecodeOptions{MaxBytes: s.MaxBytes, MaxLinks: s.MaxLinks},
+		Method:        s.Method,
+		Headers:       headers,
+		Timeout:       s.Timeout,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch subscription: %w", err)
+		return nil, err
 	}
-	defer response.Body.Close()
-
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("server returned HTTP %d for %s", response.StatusCode, s.Url)
+	if !result.NotModified {
+		s.ConfigLinks = result.Links
 	}
-
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	var links []string
-	decoded, err := utils.Base64Decode(string(body))
-	if err != nil {
-		// Probably It's not base64 encoded!, let's try parsing without decoding
-		customlog.Printf(customlog.Processing, "Couldn't decode the body! let's try parsing without decoding...\n")
-		links = strings.Split(string(body), "\n")
-	} else {
-		// Configs are separated by newline char
-		links = strings.Split(string(decoded), "\n")
-	}
-
-	// Filter out empty and whitespace-only lines
-	var filtered []string
-	for _, l := range links {
-		if trimmed := strings.TrimSpace(l); trimmed != "" {
-			filtered = append(filtered, trimmed)
-		}
-	}
-
-	s.ConfigLinks = filtered
-	return filtered, nil
+	return s.ConfigLinks, nil
 }
 
 func (s *Subscription) RemoveDuplicate(verbose bool) {

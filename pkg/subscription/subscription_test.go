@@ -1,0 +1,212 @@
+package subscription
+
+import (
+	"compress/gzip"
+	"context"
+	"encoding/base64"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestDecodeFormats(t *testing.T) {
+	const input = "vless://uuid@host:443#one\r\n\n future-protocol://value \nvless://uuid@host:443#one\n"
+	want := []string{"vless://uuid@host:443#one", "future-protocol://value", "vless://uuid@host:443#one"}
+	forms := []string{input, "\xef\xbb\xbf" + input}
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		encoded := enc.EncodeToString([]byte(input))
+		forms = append(forms, encoded, encoded[:20]+"\r\n "+encoded[20:])
+	}
+	for _, body := range forms {
+		got, err := Decode([]byte(body), DecodeOptions{})
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("decoded %v, error %v", got, err)
+		}
+	}
+	for _, body := range []string{"", " \r\n", "\xef\xbb\xbf"} {
+		got, err := Decode([]byte(body), DecodeOptions{})
+		if err != nil || got == nil || len(got) != 0 {
+			t.Fatalf("empty list: got %v, error %v", got, err)
+		}
+	}
+}
+
+func TestDecodeLargeSource(t *testing.T) {
+	// Public sources can contain 38K+ entries; both their raw and encoded
+	// forms must fit the defaults without truncating or deduplicating input.
+	const count = 40000
+	body := strings.Repeat("vless://uuid@example.com:443?type=ws#source\n", count)
+	for _, data := range []string{body, base64.StdEncoding.EncodeToString([]byte(body))} {
+		links, err := Decode([]byte(data), DecodeOptions{})
+		if err != nil || len(links) != count {
+			t.Fatalf("large source: %d links, %v", len(links), err)
+		}
+	}
+}
+
+func TestDecodeRejectsInvalidSnapshots(t *testing.T) {
+	for _, body := range []string{
+		"<html>login at https://provider.test</html>",
+		`{"outbounds":[]}`, "proxies:\n  - name: example", "not a subscription",
+		"vless://uuid@host:443\ninvalid line", "vless://", "://foo",
+		"\x00", "vless://uuid@host:443\xff",
+		base64.StdEncoding.EncodeToString([]byte("<html>login</html>")),
+	} {
+		got, err := Decode([]byte(body), DecodeOptions{})
+		if !errors.Is(err, ErrInvalidFormat) || got != nil {
+			t.Fatalf("invalid snapshot returned %v, error %v", got, err)
+		}
+	}
+	for _, tc := range []struct {
+		opts DecodeOptions
+		want error
+	}{
+		{DecodeOptions{MaxBytes: 5}, ErrTooLarge},
+		{DecodeOptions{MaxLinks: 1}, ErrTooManyLinks},
+	} {
+		got, err := Decode([]byte("socks://host:1080\nsocks://other:1080"), tc.opts)
+		if !errors.Is(err, tc.want) || got != nil {
+			t.Fatalf("limit returned %v, error %v", got, err)
+		}
+	}
+	if _, err := Decode(nil, DecodeOptions{MaxBytes: -1}); err == nil {
+		t.Fatal("negative limit accepted")
+	}
+}
+
+func TestFetchHeadersAndConditionalResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" || r.Header.Get("User-Agent") != "pool-test" {
+			t.Error("request headers missing")
+		}
+		w.Header().Set("ETag", `"revision-1"`)
+		w.Header().Set("Last-Modified", "Mon, 07 Sep 2026 12:00:00 GMT")
+		if r.Header.Get("If-None-Match") == `"revision-1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		io.WriteString(w, "socks://host:1080\n")
+	}))
+	defer server.Close()
+	headers := http.Header{"Authorization": {"Bearer token"}, "User-Agent": {"pool-test"}}
+	before := headers.Clone()
+	client := server.Client()
+	result, err := Fetch(context.Background(), client, server.URL, FetchOptions{Headers: headers})
+	if err != nil || result.NotModified || len(result.Links) != 1 || result.ETag == "" || result.LastModified == "" {
+		t.Fatalf("fetch: %+v, error %v", result, err)
+	}
+	if !reflect.DeepEqual(headers, before) || client.Timeout != 0 {
+		t.Fatal("fetch mutated caller configuration")
+	}
+	headers.Set("If-None-Match", result.ETag)
+	result, err = Fetch(context.Background(), client, server.URL, FetchOptions{Headers: headers})
+	if err != nil || !result.NotModified || result.Links != nil {
+		t.Fatalf("304 must preserve previous snapshot: %+v, error %v", result, err)
+	}
+}
+
+func TestFetchBodyLimitsAndFailures(t *testing.T) {
+	for _, mode := range []string{"length", "chunked", "gzip", "invalid", "status", "empty"} {
+		t.Run(mode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch mode {
+				case "status":
+					w.WriteHeader(http.StatusUnauthorized)
+				case "invalid":
+					io.WriteString(w, "<html>login</html>")
+				case "empty":
+					w.WriteHeader(http.StatusNoContent)
+				case "gzip":
+					w.Header().Set("Content-Encoding", "gzip")
+					gz := gzip.NewWriter(w)
+					io.WriteString(gz, strings.Repeat("socks://host:1080\n", 100))
+					gz.Close()
+				default:
+					if mode == "chunked" {
+						w.(http.Flusher).Flush()
+					}
+					io.WriteString(w, strings.Repeat("socks://host:1080\n", 100))
+				}
+			}))
+			defer server.Close()
+			result, err := Fetch(context.Background(), server.Client(), server.URL+"?secret=token", FetchOptions{DecodeOptions: DecodeOptions{MaxBytes: 64}})
+			switch mode {
+			case "empty":
+				if err != nil || result.Links == nil || len(result.Links) != 0 {
+					t.Fatalf("empty: %+v, %v", result, err)
+				}
+			case "status", "invalid":
+				if err == nil || result != nil || strings.Contains(err.Error(), "token") {
+					t.Fatalf("failure: %+v, %v", result, err)
+				}
+			default:
+				if !errors.Is(err, ErrTooLarge) || result != nil {
+					t.Fatalf("oversized body: %+v, %v", result, err)
+				}
+			}
+		})
+	}
+}
+
+func TestFetchCancellationAndTimeout(t *testing.T) {
+	for _, mode := range []string{"cancel", "timeout", "body-timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			started := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if mode == "body-timeout" {
+					w.(http.Flusher).Flush()
+				}
+				close(started)
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if mode == "cancel" {
+				go func() { <-started; cancel() }()
+			}
+			_, err := Fetch(ctx, server.Client(), server.URL+"?token=super-secret", FetchOptions{Timeout: 100 * time.Millisecond})
+			want := context.DeadlineExceeded
+			if mode == "cancel" {
+				want = context.Canceled
+			}
+			if !errors.Is(err, want) || strings.Contains(err.Error(), "super-secret") {
+				t.Fatalf("wanted redacted %v, got %v", want, err)
+			}
+		})
+	}
+}
+
+func TestFetchClientPolicyAndURLValidation(t *testing.T) {
+	policyErr := errors.New("blocked destination with secret=token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/other", http.StatusFound)
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return policyErr }
+	_, err := Fetch(context.Background(), client, server.URL, FetchOptions{})
+	if !errors.Is(err, policyErr) || strings.Contains(err.Error(), "token") {
+		t.Fatalf("redirect policy not preserved/redacted: %v", err)
+	}
+	for _, address := range []string{"file:///etc/passwd", "ftp://host/source", "://token", "https:///source"} {
+		if _, err := Fetch(context.Background(), client, address, FetchOptions{}); err == nil {
+			t.Fatal("invalid URL accepted")
+		}
+	}
+}
+
+func TestDecodePreservesMalformedCandidates(t *testing.T) {
+	// Public lists can contain a handful of bad credentials among thousands
+	// of valid links. Report those candidates later; do not lose the source.
+	body := "ss://bad\x00credential@host:443#broken\nsocks://host:1080\n"
+	links, err := Decode([]byte(body), DecodeOptions{})
+	if err != nil || len(links) != 2 || links[0] != "ss://bad\x00credential@host:443#broken" {
+		t.Fatalf("malformed candidate lost: %d links, %v", len(links), err)
+	}
+}

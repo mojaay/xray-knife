@@ -1,11 +1,15 @@
 package subs
 
 import (
+	"compress/gzip"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/lilendian0x00/xray-knife/v11/pkg/subscription"
 )
 
 func TestFetchAll_Base64Encoded(t *testing.T) {
@@ -37,6 +41,23 @@ func TestFetchAll_Base64Encoded(t *testing.T) {
 	}
 }
 
+func TestFetchAll_PreservesBrowserHeadersAndBoundsDecompression(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.UserAgent(), "Chrome/") {
+			t.Errorf("default browser User-Agent lost: %q", r.UserAgent())
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		gz.Write([]byte(strings.Repeat("socks://host:1080\n", 100)))
+		gz.Close()
+	}))
+	defer server.Close()
+	s := Subscription{Url: server.URL, MaxBytes: 64}
+	if _, err := s.FetchAll(); !errors.Is(err, subscription.ErrTooLarge) {
+		t.Fatalf("expected decompressed body limit, got %v", err)
+	}
+}
+
 func TestFetchAll_PlainText(t *testing.T) {
 	configs := "trojan://password@host:443?sni=example.com#Trojan1\nvless://uuid@host:443#VLESS1\n"
 
@@ -57,7 +78,7 @@ func TestFetchAll_PlainText(t *testing.T) {
 }
 
 func TestFetchAll_FiltersEmptyLines(t *testing.T) {
-	configs := "link1\n\n  \nlink2\n\n"
+	configs := "vless://uuid@host:443#one\n\n  \nvless://uuid@host:443#two\n\n"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(configs))
@@ -117,7 +138,7 @@ func TestFetchAll_CustomUserAgent(t *testing.T) {
 	var receivedUA string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedUA = r.Header.Get("User-Agent")
-		w.Write([]byte("link1\n"))
+		w.Write([]byte("vless://uuid@host:443\n"))
 	}))
 	defer server.Close()
 

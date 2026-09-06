@@ -16,7 +16,6 @@ import (
 	"github.com/gocarina/gocsv"
 	"github.com/lilendian0x00/xray-knife/v11/database"
 	"github.com/lilendian0x00/xray-knife/v11/pkg/core"
-	"github.com/lilendian0x00/xray-knife/v11/pkg/core/protocol"
 	"github.com/lilendian0x00/xray-knife/v11/utils"
 	"github.com/lilendian0x00/xray-knife/v11/utils/customlog"
 )
@@ -258,46 +257,8 @@ func DeduplicateLinks(links []string) ([]string, int) {
 	return unique, len(links) - len(unique)
 }
 
-// semanticKey builds a canonical identity for a config from its parsed fields.
-// It captures what determines the actual connection — protocol, endpoint,
-// credential, transport, and TLS parameters — and deliberately omits cosmetic
-// bits (remark, raw link text, client fingerprint) so re-skinned duplicates
-// collapse. Fields are joined with the unit separator so values can't bleed
-// across boundaries.
-func semanticKey(gc protocol.GeneralConfig) string {
-	return strings.Join([]string{
-		strings.ToLower(gc.Protocol),
-		gc.Address,
-		gc.Port,
-		gc.ID,  // uuid (vmess/vless) or password (trojan/ss)
-		gc.Aid, // vmess alterId
-		gc.Network,
-		gc.Type,
-		gc.Security,
-		gc.TLS,
-		gc.SNI,
-		gc.Host,
-		gc.Path,
-		gc.ServiceName,
-		gc.Authority,
-		gc.Mode,
-	}, "\x1f")
-}
-
-// SemanticDeduplicateLinks removes links that describe the same underlying
-// connection even when their strings differ — e.g. a different #remark,
-// reordered query parameters, or a re-encoded vmess payload. Two links collapse
-// only when their connection-identifying fields match (see semanticKey); the
-// remark and raw text are ignored. The first occurrence is kept and input order
-// is preserved. It returns the deduplicated slice and the number removed.
-//
-// Because it keys on protocol + credential, configs that merely share an
-// address:port (e.g. a vless and a trojan multiplexed on :443, or two users on
-// one server) are correctly kept as distinct.
-//
-// Links that fail to parse are keyed by their trimmed text instead, so they are
-// never dropped for being unrecognized — the full test still reports them as
-// broken, and identical broken strings still collapse.
+// SemanticDeduplicateLinks keeps the first link for each connection fingerprint.
+// Unparseable links use exact text so the tester can still report them.
 func SemanticDeduplicateLinks(c core.Core, links []string) ([]string, int) {
 	seen := make(map[string]struct{}, len(links))
 	unique := make([]string, 0, len(links))
@@ -308,10 +269,8 @@ func SemanticDeduplicateLinks(c core.Core, links []string) ([]string, int) {
 			continue
 		}
 		key := "raw:" + trimmed // fallback for unparseable links
-		if proto, err := c.CreateProtocol(trimmed); err == nil {
-			if perr := proto.Parse(); perr == nil {
-				key = "sem:" + semanticKey(proto.ConvertToGeneralConfig())
-			}
+		if fingerprint, err := core.ConnectionFingerprint(c, trimmed); err == nil {
+			key = fingerprint
 		}
 		if _, exists := seen[key]; exists {
 			removed++

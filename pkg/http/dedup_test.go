@@ -114,6 +114,16 @@ func TestSemanticDeduplicateLinks(t *testing.T) {
 	}
 }
 
+func TestSemanticDeduplicateLinksUsesCompleteIdentity(t *testing.T) {
+	c := core.NewAutomaticCore(false, false)
+	base := "vless://uuid@host:443?security=reality&type=tcp&pbk="
+	links := []string{base + "key1#one", base + "key2#two", base + "key1#renamed", "socks://alice:pass@host:1080", "socks://bob:pass@host:1080"}
+	got, removed := SemanticDeduplicateLinks(c, links)
+	if removed != 1 || len(got) != 4 || got[0] != links[0] || got[1] != links[1] {
+		t.Fatalf("lost distinct credentials/REALITY config: %d kept, %d removed", len(got), removed)
+	}
+}
+
 func vless443(uuid, security, remark string) string {
 	return "vless://" + uuid + "@1.2.3.4:443?encryption=none&security=" + security + "&host=a.com&path=%2Fx&type=ws#" + remark
 }
